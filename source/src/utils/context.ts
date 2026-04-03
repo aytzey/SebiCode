@@ -67,9 +67,9 @@ export function getContextWindowForModel(
     }
   }
 
-  // Codex: gpt-5.4 has ~200k context window
+  // Codex: gpt-5.4 family has 272k context window
   if (getAPIProvider() === 'codex') {
-    return MODEL_CONTEXT_WINDOW_DEFAULT
+    return 272_000
   }
 
   // [1m] suffix — explicit client-side opt-in, respected over all detection

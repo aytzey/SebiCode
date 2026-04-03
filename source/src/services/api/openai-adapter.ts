@@ -638,7 +638,7 @@ export class OpenAIAdapter {
           return {
             async withResponse() {
               const response = await self.makeRequest(params, options)
-              const model = (process.env.CODEX_MODEL || DEFAULT_MODEL)
+              const model = process.env.CODEX_MODEL || (params.model as string) || DEFAULT_MODEL
               const stream = new ResponsesStreamToAnthropicStream(response, model)
               return {
                 data: stream,
@@ -659,7 +659,9 @@ export class OpenAIAdapter {
     // Get fresh auth token
     const auth = await ensureFreshToken()
 
-    const model = process.env.CODEX_MODEL || DEFAULT_MODEL
+    // Model priority: CODEX_MODEL env > params.model (from --model flag) > default
+    const paramsModel = params.model as string | undefined
+    const model = process.env.CODEX_MODEL || paramsModel || DEFAULT_MODEL
     const baseURL = (process.env.CODEX_BASE_URL || DEFAULT_CODEX_BASE).replace(/\/$/, '')
     const effort = resolveEffort(params)
 

@@ -34,6 +34,9 @@ export type ModelName = string
 export type ModelSetting = ModelName | ModelAlias | null
 
 export function getSmallFastModel(): ModelName {
+  if (getAPIProvider() === 'codex') {
+    return process.env.CODEX_SMALL_FAST_MODEL || 'gpt-5.4-mini'
+  }
   return process.env.ANTHROPIC_SMALL_FAST_MODEL || getDefaultHaikuModel()
 }
 
@@ -176,6 +179,11 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
+  // Codex: default to gpt-5.4 (override via CODEX_MODEL env var)
+  if (getAPIProvider() === 'codex') {
+    return process.env.CODEX_MODEL || 'gpt-5.4'
+  }
+
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
   if (process.env.USER_TYPE === 'ant') {
     return (
@@ -346,7 +354,33 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  * Returns a human-readable display name for known public models, or null
  * if the model is not recognized as a public model.
  */
+// Codex/OpenAI model display names (from Codex models API)
+const CODEX_DISPLAY_NAMES: Record<string, string> = {
+  'gpt-5.4': 'GPT-5.4',
+  'gpt-5.4-mini': 'GPT-5.4 Mini',
+  'gpt-5.3-codex': 'GPT-5.3 Codex',
+  'gpt-5.3-codex-spark': 'GPT-5.3 Codex Spark',
+  'gpt-5.2-codex': 'GPT-5.2 Codex',
+  'gpt-5.2': 'GPT-5.2',
+  'gpt-5.1-codex-max': 'GPT-5.1 Codex Max',
+  'gpt-5.1-codex': 'GPT-5.1 Codex',
+  'gpt-5.1-codex-mini': 'GPT-5.1 Codex Mini',
+  'gpt-5.1': 'GPT-5.1',
+  'gpt-5-codex': 'GPT-5 Codex',
+  'gpt-5-codex-mini': 'GPT-5 Codex Mini',
+  'gpt-5': 'GPT-5',
+}
+
 export function getPublicModelDisplayName(model: ModelName): string | null {
+  // Codex model display names
+  if (getAPIProvider() === 'codex') {
+    const lower = model.toLowerCase()
+    for (const [key, name] of Object.entries(CODEX_DISPLAY_NAMES)) {
+      if (lower === key || lower.startsWith(key + '-')) return name
+    }
+    return model // pass through unknown models as-is
+  }
+
   switch (model) {
     case getModelStrings().opus46:
       return 'Opus 4.6'
@@ -447,6 +481,17 @@ export function parseUserSpecifiedModel(
 ): ModelName {
   const modelInputTrimmed = modelInput.trim()
   const normalizedModel = modelInputTrimmed.toLowerCase()
+
+  // Codex: pass through OpenAI/Codex model names directly
+  if (getAPIProvider() === 'codex') {
+    if (normalizedModel.startsWith('gpt-')) {
+      return modelInputTrimmed
+    }
+    // Map Claude aliases to codex default
+    if (normalizedModel === 'opus' || normalizedModel === 'sonnet' || normalizedModel === 'haiku' || normalizedModel === 'best' || normalizedModel === 'opusplan') {
+      return process.env.CODEX_MODEL || 'gpt-5.4'
+    }
+  }
 
   const has1mTag = has1mContext(normalizedModel)
   const modelString = has1mTag

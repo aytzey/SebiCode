@@ -657,6 +657,7 @@ export class OpenAIAdapter {
       model,
       input,
       stream: true,
+      store: false,
     }
 
     if (instructions) {
@@ -674,17 +675,8 @@ export class OpenAIAdapter {
       body.tools = tools
     }
 
-    // Max output tokens
-    const maxTokens = params.max_tokens as number | undefined
-    if (maxTokens) {
-      body.max_output_tokens = maxTokens
-    }
-
-    // Temperature — Responses API supports it for non-reasoning models
-    const temp = params.temperature as number | undefined
-    if (temp !== undefined && !model.startsWith('o')) {
-      body.temperature = temp
-    }
+    // Note: max_output_tokens and temperature are not supported by the
+    // chatgpt.com/backend-api/codex endpoint — omitted intentionally
 
     // Build headers
     const headers: Record<string, string> = {

@@ -4,6 +4,7 @@ import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
+import { getAPIProvider } from './model/providers.js'
 
 // Model context window size (200k tokens for all models right now)
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
@@ -64,6 +65,11 @@ export function getContextWindowForModel(
     if (!isNaN(override) && override > 0) {
       return override
     }
+  }
+
+  // Codex: gpt-5.4 has ~200k context window
+  if (getAPIProvider() === 'codex') {
+    return MODEL_CONTEXT_WINDOW_DEFAULT
   }
 
   // [1m] suffix — explicit client-side opt-in, respected over all detection

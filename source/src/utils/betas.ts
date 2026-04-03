@@ -163,7 +163,7 @@ export function modelSupportsAutoMode(model: string): boolean {
     // External: firstParty-only at launch (PI probes not wired for
     // Bedrock/Vertex/Foundry yet). Checked before allowModels so the GB
     // override can't enable auto mode on unsupported providers.
-    if (process.env.USER_TYPE !== 'ant' && getAPIProvider() !== 'firstParty') {
+    if (process.env.USER_TYPE !== 'ant' && getAPIProvider() !== 'firstParty' && getAPIProvider() !== 'codex') {
       return false
     }
     // GrowthBook override: tengu_auto_mode_config.allowModels force-enables
@@ -190,6 +190,10 @@ export function modelSupportsAutoMode(model: string): boolean {
     }
     // External allowlist (firstParty already checked above).
     return /^claude-(opus|sonnet)-4-6/.test(m)
+  }
+  // Codex: auto mode always available (gpt-5.4 supports agentic flows)
+  if (getAPIProvider() === 'codex') {
+    return true
   }
   return false
 }

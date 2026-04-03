@@ -311,10 +311,25 @@ function translateTools(tools: AnthropicTool[] | undefined): ResponsesTool[] | u
 // Effort mapping: Claude thinking config → Codex reasoning effort
 // ---------------------------------------------------------------------------
 
+// Claude effort → Codex reasoning_effort mapping
+const EFFORT_MAP: Record<string, string> = {
+  'max': 'xhigh',
+  'high': 'xhigh',
+  'medium': 'high',
+  'low': 'medium',
+}
+
 function resolveEffort(params: Record<string, unknown>): string {
   // Explicit env override
   const envEffort = process.env.CODEX_EFFORT
   if (envEffort) return envEffort
+
+  // Check Claude's output_config.effort parameter (set by /effort command)
+  const outputConfig = params.output_config as Record<string, unknown> | undefined
+  if (outputConfig?.effort) {
+    const claudeEffort = String(outputConfig.effort)
+    return EFFORT_MAP[claudeEffort] || DEFAULT_EFFORT
+  }
 
   // Map from Claude's thinking config
   const thinking = params.thinking as { type: string; budget_tokens?: number } | undefined

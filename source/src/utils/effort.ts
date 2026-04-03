@@ -42,6 +42,10 @@ export function modelSupportsEffort(model: string): boolean {
   // the model launch DRI and research. This is a sensitive setting that can
   // greatly affect model quality and bashing.
 
+  // Codex: effort is always supported (maps to reasoning_effort in adapter)
+  if (getAPIProvider() === 'codex') {
+    return true
+  }
   // Default to true for unknown model strings on 1P.
   // Do not default to true for 3P as they have different formats for their
   // model strings (ex. anthropics/claude-code#30795)
@@ -51,6 +55,10 @@ export function modelSupportsEffort(model: string): boolean {
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
 // Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
 export function modelSupportsMaxEffort(model: string): boolean {
+  // Codex: xhigh effort is supported (maps to reasoning_effort: xhigh)
+  if (getAPIProvider() === 'codex') {
+    return true
+  }
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P

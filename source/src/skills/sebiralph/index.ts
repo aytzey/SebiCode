@@ -1,6 +1,5 @@
 import { registerBundledSkill } from '../bundledSkills.js'
 import { DEFAULT_CONFIG } from './types.js'
-import { formatConfigPickerPrompt } from './config.js'
 import { buildOrchestratorPrompt } from './orchestrator.js'
 
 export function registerSebiRalphSkill(): void {
@@ -10,7 +9,7 @@ export function registerSebiRalphSkill(): void {
     aliases: ['ralph'],
     whenToUse: 'When the user wants to orchestrate a complex implementation using both Claude and Codex models collaboratively',
     userInvocable: true,
-    effort: 'high',
+    effort: 'medium',
     argumentHint: '<task description>',
 
     async getPromptForCommand(args: string) {

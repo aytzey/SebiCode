@@ -406,7 +406,12 @@ class ResponsesStreamToAnthropicStream {
         model: this.model,
         stop_reason: null,
         stop_sequence: null,
-        usage: { input_tokens: 0, output_tokens: 0 },
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
       },
     }
 
@@ -461,9 +466,10 @@ class ResponsesStreamToAnthropicStream {
         stop_sequence: null,
       },
       usage: {
+        input_tokens: this.inputTokens,
         output_tokens: this.totalOutputTokens,
-        // Map OpenAI cached tokens → Anthropic cache_read_input_tokens for UI display
-        ...(this.cachedInputTokens > 0 && { cache_read_input_tokens: this.cachedInputTokens }),
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: this.cachedInputTokens,
       },
     }
 

@@ -84,6 +84,7 @@ const baseInputSchema = lazySchema(() => z.object({
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
   model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent."),
+  provider: z.enum(['anthropic', 'openai']).optional().describe("API provider override. 'anthropic' = Claude, 'openai' = Codex/OpenAI."),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -241,6 +242,7 @@ export const AgentTool = buildTool({
     subagent_type,
     description,
     model: modelParam,
+    provider: providerParam,
     run_in_background,
     name,
     team_name,
@@ -632,7 +634,9 @@ export const AgentTool = buildTool({
         useExactTools: true
       }),
       worktreePath: worktreeInfo?.worktreePath,
-      description
+      description,
+      // Provider priority: tool call input > agent definition > undefined (inherit session)
+      providerOverride: providerParam ?? selectedAgent.provider
     };
 
     // Helper to wrap execution with a cwd override: explicit cwd arg (KAIROS)

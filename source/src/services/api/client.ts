@@ -91,12 +91,14 @@ export async function getAnthropicClient({
   model,
   fetchOverride,
   source,
+  providerOverride,
 }: {
   apiKey?: string
   maxRetries: number
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
+  providerOverride?: 'anthropic' | 'openai'
 }): Promise<Anthropic> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
@@ -128,13 +130,17 @@ export async function getAnthropicClient({
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
-  // Codex: use local ~/.codex/auth.json OAuth tokens, skip Anthropic auth
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_CODEX)) {
+  // Provider routing: explicit providerOverride > env-var CLAUDE_CODE_USE_CODEX
+  const useCodex = providerOverride === 'openai' ||
+    (providerOverride === undefined && isEnvTruthy(process.env.CLAUDE_CODE_USE_CODEX))
+
+  if (useCodex) {
     const { OpenAIAdapter } = await import('./openai-adapter.js')
     return new OpenAIAdapter({
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
     }) as unknown as Anthropic
   }
+  // If providerOverride === 'anthropic', fall through to normal Anthropic path
 
   logForDebugging('[API:auth] OAuth token check starting')
   await checkAndRefreshOAuthTokenIfNeeded()

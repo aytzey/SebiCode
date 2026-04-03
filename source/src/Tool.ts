@@ -176,6 +176,8 @@ export type ToolUseContext = {
     querySource?: QuerySource
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
+    /** API provider override for subagents ('anthropic' = Claude, 'openai' = Codex/OpenAI). */
+    providerOverride?: 'anthropic' | 'openai'
   }
   abortController: AbortController
   readFileState: FileStateCache

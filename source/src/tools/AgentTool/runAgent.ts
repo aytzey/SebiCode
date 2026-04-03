@@ -267,6 +267,7 @@ export async function* runAgent({
   description,
   transcriptSubdir,
   onQueryProgress,
+  providerOverride,
 }: {
   agentDefinition: AgentDefinition
   promptMessages: Message[]
@@ -326,6 +327,9 @@ export async function* runAgent({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
+  /** API provider override for this agent ('anthropic' = Claude, 'openai' = Codex/OpenAI).
+   * When undefined, behavior is identical to current code (inherits session default). */
+  providerOverride?: 'anthropic' | 'openai'
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
@@ -692,6 +696,7 @@ export async function* runAgent({
     // reads undefined and only the message-scan fallback fires — which
     // autocompact defeats by replacing the fork-boilerplate message.
     ...(useExactTools && { querySource }),
+    ...(providerOverride && { providerOverride }),
   }
 
   // Create subagent context using shared helper

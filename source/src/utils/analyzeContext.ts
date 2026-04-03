@@ -1165,9 +1165,9 @@ export async function analyzeContextUsage(
   // When API usage is available, use it for total to match status line calculation
   // Status line uses: input_tokens + cache_creation_input_tokens + cache_read_input_tokens
   const totalFromAPI = apiUsage
-    ? apiUsage.input_tokens +
-      apiUsage.cache_creation_input_tokens +
-      apiUsage.cache_read_input_tokens
+    ? (apiUsage.input_tokens ?? 0) +
+      (apiUsage.cache_creation_input_tokens ?? 0) +
+      (apiUsage.cache_read_input_tokens ?? 0)
     : null
 
   // Use API total if available, otherwise fall back to estimated total

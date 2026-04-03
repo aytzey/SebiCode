@@ -129,9 +129,10 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
  * Calculates the USD cost based on token usage and model cost configuration
  */
 function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
+  if (!usage) return 0
   return (
-    (usage.input_tokens / 1_000_000) * modelCosts.inputTokens +
-    (usage.output_tokens / 1_000_000) * modelCosts.outputTokens +
+    ((usage.input_tokens ?? 0) / 1_000_000) * modelCosts.inputTokens +
+    ((usage.output_tokens ?? 0) / 1_000_000) * modelCosts.outputTokens +
     ((usage.cache_read_input_tokens ?? 0) / 1_000_000) *
       modelCosts.promptCacheReadTokens +
     ((usage.cache_creation_input_tokens ?? 0) / 1_000_000) *

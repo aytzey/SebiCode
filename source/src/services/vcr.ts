@@ -168,6 +168,7 @@ function addCachedCostToTotalSessionCost(
   }
   const model = message.message.model
   const usage = message.message.usage
+  if (!usage) return // Guard: usage may be undefined for cross-provider messages
   const costUSD = calculateUSDCost(model, usage)
   addToTotalSessionCost(costUSD, usage, model)
 }

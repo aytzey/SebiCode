@@ -134,9 +134,9 @@ export function calculateContextPercentages(
   }
 
   const totalInputTokens =
-    currentUsage.input_tokens +
-    currentUsage.cache_creation_input_tokens +
-    currentUsage.cache_read_input_tokens
+    (currentUsage.input_tokens ?? 0) +
+    (currentUsage.cache_creation_input_tokens ?? 0) +
+    (currentUsage.cache_read_input_tokens ?? 0)
 
   const usedPercentage = Math.round(
     (totalInputTokens / contextWindowSize) * 100,

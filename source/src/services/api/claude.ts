@@ -2942,42 +2942,44 @@ export function updateUsage(
   usage: Readonly<NonNullableUsage>,
   partUsage: BetaMessageDeltaUsage | undefined,
 ): NonNullableUsage {
+  // Guard: if usage is undefined (e.g. cross-provider subagent), use defaults.
+  const u = usage ?? EMPTY_USAGE
   if (!partUsage) {
-    return { ...usage }
+    return { ...u }
   }
   return {
     input_tokens:
       partUsage.input_tokens !== null && partUsage.input_tokens > 0
         ? partUsage.input_tokens
-        : usage.input_tokens,
+        : (u.input_tokens ?? 0),
     cache_creation_input_tokens:
       partUsage.cache_creation_input_tokens !== null &&
       partUsage.cache_creation_input_tokens > 0
         ? partUsage.cache_creation_input_tokens
-        : usage.cache_creation_input_tokens,
+        : (u.cache_creation_input_tokens ?? 0),
     cache_read_input_tokens:
       partUsage.cache_read_input_tokens !== null &&
       partUsage.cache_read_input_tokens > 0
         ? partUsage.cache_read_input_tokens
-        : usage.cache_read_input_tokens,
-    output_tokens: partUsage.output_tokens ?? usage.output_tokens,
+        : (u.cache_read_input_tokens ?? 0),
+    output_tokens: partUsage.output_tokens ?? (u.output_tokens ?? 0),
     server_tool_use: {
       web_search_requests:
         partUsage.server_tool_use?.web_search_requests ??
-        usage.server_tool_use.web_search_requests,
+        (u.server_tool_use?.web_search_requests ?? 0),
       web_fetch_requests:
         partUsage.server_tool_use?.web_fetch_requests ??
-        usage.server_tool_use.web_fetch_requests,
+        (u.server_tool_use?.web_fetch_requests ?? 0),
     },
-    service_tier: usage.service_tier,
+    service_tier: u.service_tier ?? 'standard',
     cache_creation: {
       // SDK type BetaMessageDeltaUsage is missing cache_creation, but it's real!
       ephemeral_1h_input_tokens:
         (partUsage as BetaUsage).cache_creation?.ephemeral_1h_input_tokens ??
-        usage.cache_creation.ephemeral_1h_input_tokens,
+        (u.cache_creation?.ephemeral_1h_input_tokens ?? 0),
       ephemeral_5m_input_tokens:
         (partUsage as BetaUsage).cache_creation?.ephemeral_5m_input_tokens ??
-        usage.cache_creation.ephemeral_5m_input_tokens,
+        (u.cache_creation?.ephemeral_5m_input_tokens ?? 0),
     },
     // cache_deleted_input_tokens: returned by the API when cache editing
     // deletes KV cache content, but not in SDK types. Kept off NonNullableUsage
@@ -2993,13 +2995,13 @@ export function updateUsage(
               .cache_deleted_input_tokens > 0
               ? (partUsage as unknown as { cache_deleted_input_tokens: number })
                   .cache_deleted_input_tokens
-              : ((usage as unknown as { cache_deleted_input_tokens?: number })
+              : ((u as unknown as { cache_deleted_input_tokens?: number })
                   .cache_deleted_input_tokens ?? 0),
         }
       : {}),
-    inference_geo: usage.inference_geo,
-    iterations: partUsage.iterations ?? usage.iterations,
-    speed: (partUsage as BetaUsage).speed ?? usage.speed,
+    inference_geo: u.inference_geo ?? '',
+    iterations: partUsage.iterations ?? (u.iterations ?? []),
+    speed: (partUsage as BetaUsage).speed ?? (u.speed ?? 'standard'),
   }
 }
 
@@ -3011,46 +3013,51 @@ export function accumulateUsage(
   totalUsage: Readonly<NonNullableUsage>,
   messageUsage: Readonly<NonNullableUsage>,
 ): NonNullableUsage {
+  // Guard: if either argument is undefined/null (e.g. cross-provider subagent
+  // returning usage in a different shape), fall back to EMPTY_USAGE to prevent
+  // "Cannot read properties of undefined (reading 'input_tokens')" crashes.
+  const t = totalUsage ?? EMPTY_USAGE
+  const m = messageUsage ?? EMPTY_USAGE
   return {
-    input_tokens: totalUsage.input_tokens + messageUsage.input_tokens,
+    input_tokens: (t.input_tokens ?? 0) + (m.input_tokens ?? 0),
     cache_creation_input_tokens:
-      totalUsage.cache_creation_input_tokens +
-      messageUsage.cache_creation_input_tokens,
+      (t.cache_creation_input_tokens ?? 0) +
+      (m.cache_creation_input_tokens ?? 0),
     cache_read_input_tokens:
-      totalUsage.cache_read_input_tokens + messageUsage.cache_read_input_tokens,
-    output_tokens: totalUsage.output_tokens + messageUsage.output_tokens,
+      (t.cache_read_input_tokens ?? 0) + (m.cache_read_input_tokens ?? 0),
+    output_tokens: (t.output_tokens ?? 0) + (m.output_tokens ?? 0),
     server_tool_use: {
       web_search_requests:
-        totalUsage.server_tool_use.web_search_requests +
-        messageUsage.server_tool_use.web_search_requests,
+        (t.server_tool_use?.web_search_requests ?? 0) +
+        (m.server_tool_use?.web_search_requests ?? 0),
       web_fetch_requests:
-        totalUsage.server_tool_use.web_fetch_requests +
-        messageUsage.server_tool_use.web_fetch_requests,
+        (t.server_tool_use?.web_fetch_requests ?? 0) +
+        (m.server_tool_use?.web_fetch_requests ?? 0),
     },
-    service_tier: messageUsage.service_tier, // Use the most recent service tier
+    service_tier: m.service_tier ?? t.service_tier, // Use the most recent service tier
     cache_creation: {
       ephemeral_1h_input_tokens:
-        totalUsage.cache_creation.ephemeral_1h_input_tokens +
-        messageUsage.cache_creation.ephemeral_1h_input_tokens,
+        (t.cache_creation?.ephemeral_1h_input_tokens ?? 0) +
+        (m.cache_creation?.ephemeral_1h_input_tokens ?? 0),
       ephemeral_5m_input_tokens:
-        totalUsage.cache_creation.ephemeral_5m_input_tokens +
-        messageUsage.cache_creation.ephemeral_5m_input_tokens,
+        (t.cache_creation?.ephemeral_5m_input_tokens ?? 0) +
+        (m.cache_creation?.ephemeral_5m_input_tokens ?? 0),
     },
     // See comment in updateUsage — field is not on NonNullableUsage to keep
     // the string out of external builds.
     ...(feature('CACHED_MICROCOMPACT')
       ? {
           cache_deleted_input_tokens:
-            ((totalUsage as unknown as { cache_deleted_input_tokens?: number })
+            ((t as unknown as { cache_deleted_input_tokens?: number })
               .cache_deleted_input_tokens ?? 0) +
             ((
-              messageUsage as unknown as { cache_deleted_input_tokens?: number }
+              m as unknown as { cache_deleted_input_tokens?: number }
             ).cache_deleted_input_tokens ?? 0),
         }
       : {}),
-    inference_geo: messageUsage.inference_geo, // Use the most recent
-    iterations: messageUsage.iterations, // Use the most recent
-    speed: messageUsage.speed, // Use the most recent
+    inference_geo: m.inference_geo ?? t.inference_geo ?? '', // Use the most recent
+    iterations: m.iterations ?? t.iterations ?? [], // Use the most recent
+    speed: m.speed ?? t.speed ?? 'standard', // Use the most recent
   }
 }
 

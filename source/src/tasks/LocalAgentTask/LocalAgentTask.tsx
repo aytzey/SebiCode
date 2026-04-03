@@ -70,9 +70,10 @@ export function updateProgressFromMessage(tracker: ProgressTracker, message: Mes
     return;
   }
   const usage = message.message.usage;
+  if (!usage) return; // Guard: usage may be undefined for cross-provider subagent messages
   // Keep latest input (it's cumulative in the API), sum outputs
-  tracker.latestInputTokens = usage.input_tokens + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
-  tracker.cumulativeOutputTokens += usage.output_tokens;
+  tracker.latestInputTokens = (usage.input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0);
+  tracker.cumulativeOutputTokens += usage.output_tokens ?? 0;
   for (const content of message.message.content) {
     if (content.type === 'tool_use') {
       tracker.toolUseCount++;

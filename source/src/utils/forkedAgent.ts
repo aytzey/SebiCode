@@ -645,12 +645,12 @@ function logForkAgentQueryEvent({
 }): void {
   // Calculate cache hit rate
   const totalInputTokens =
-    totalUsage.input_tokens +
-    totalUsage.cache_creation_input_tokens +
-    totalUsage.cache_read_input_tokens
+    (totalUsage?.input_tokens ?? 0) +
+    (totalUsage?.cache_creation_input_tokens ?? 0) +
+    (totalUsage?.cache_read_input_tokens ?? 0)
   const cacheHitRate =
     totalInputTokens > 0
-      ? totalUsage.cache_read_input_tokens / totalInputTokens
+      ? (totalUsage?.cache_read_input_tokens ?? 0) / totalInputTokens
       : 0
 
   logEvent('tengu_fork_agent_query', {
@@ -663,16 +663,16 @@ function logForkAgentQueryEvent({
     messageCount,
 
     // NonNullableUsage fields
-    inputTokens: totalUsage.input_tokens,
-    outputTokens: totalUsage.output_tokens,
-    cacheReadInputTokens: totalUsage.cache_read_input_tokens,
-    cacheCreationInputTokens: totalUsage.cache_creation_input_tokens,
+    inputTokens: totalUsage?.input_tokens ?? 0,
+    outputTokens: totalUsage?.output_tokens ?? 0,
+    cacheReadInputTokens: totalUsage?.cache_read_input_tokens ?? 0,
+    cacheCreationInputTokens: totalUsage?.cache_creation_input_tokens ?? 0,
     serviceTier:
-      totalUsage.service_tier as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      (totalUsage?.service_tier ?? 'standard') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     cacheCreationEphemeral1hTokens:
-      totalUsage.cache_creation.ephemeral_1h_input_tokens,
+      totalUsage?.cache_creation?.ephemeral_1h_input_tokens ?? 0,
     cacheCreationEphemeral5mTokens:
-      totalUsage.cache_creation.ephemeral_5m_input_tokens,
+      totalUsage?.cache_creation?.ephemeral_5m_input_tokens ?? 0,
 
     // Derived metrics
     cacheHitRate,

@@ -480,7 +480,7 @@ export function renderToolUseProgressMessage(progressMessages: ProgressMessage<P
     let tokens = null;
     if (latestAssistant?.data.message.type === 'assistant') {
       const usage = latestAssistant.data.message.message.usage;
-      tokens = (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + usage.input_tokens + usage.output_tokens;
+      tokens = usage ? (usage.cache_creation_input_tokens ?? 0) + (usage.cache_read_input_tokens ?? 0) + (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0) : null;
     }
     return {
       toolUseCount,

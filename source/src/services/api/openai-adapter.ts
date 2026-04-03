@@ -690,24 +690,25 @@ export class OpenAIAdapter {
       // bootstrap state may not be ready yet
     }
 
+    // Build request body matching official Codex CLI format exactly
+    const hasReasoning = effort !== 'none'
     const body: Record<string, unknown> = {
       model,
+      instructions: instructions || '',
       input,
       stream: true,
       store: false,
-      // Prompt cache: route by session ID so repeated prefixes cache-hit
-      // (automatic 90% discount on cached input tokens)
+      tool_choice: 'auto',
+      parallel_tool_calls: true,
+      // Prompt cache: route by session ID (90% discount on cached tokens)
       ...(cacheKey && { prompt_cache_key: cacheKey }),
+      // Include encrypted reasoning content for context continuity
+      include: hasReasoning ? ['reasoning.encrypted_content'] : [],
     }
 
-    if (instructions) {
-      body.instructions = instructions
-    }
-
-    // Reasoning/effort
-    body.reasoning = {
-      effort,
-      summary: 'concise',
+    // Reasoning/effort — match Codex format
+    if (hasReasoning) {
+      body.reasoning = { effort, summary: 'auto' }
     }
 
     // Tools — keep in stable order for cache prefix matching
@@ -715,9 +716,14 @@ export class OpenAIAdapter {
       body.tools = tools
     }
 
-    // Build headers
+    // Build headers — match Codex CLI headers
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      ...(cacheKey && {
+        'session_id': cacheKey,
+        'x-client-request-id': cacheKey,
+      }),
     }
 
     if (auth.auth_mode === 'api_key' && auth.OPENAI_API_KEY) {

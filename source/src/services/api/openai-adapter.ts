@@ -1,32 +1,136 @@
 /**
- * OpenAI/Codex Adapter for Claude Code
+ * Codex Adapter for sebi-code
  *
- * Translates between the Anthropic Messages API interface (used internally)
- * and OpenAI's Chat Completions API. This allows Claude Code's entire tool
- * pipeline, streaming UI, and agentic loop to work unchanged with OpenAI models.
+ * Uses the local Codex OAuth tokens (~/.codex/auth.json) to call OpenAI's
+ * Responses API at chatgpt.com/backend-api/codex. Translates between the
+ * Anthropic Messages API interface (used by claude.ts) and the Responses API
+ * wire format, including streaming events.
  *
- * Environment variables:
- *   OPENAI_API_KEY          — required
- *   OPENAI_BASE_URL         — optional, defaults to https://api.openai.com/v1
- *   OPENAI_MODEL            — optional, defaults to o3
- *   OPENAI_ORGANIZATION     — optional org header
+ * Model: gpt-5.4 (default)
+ * Effort: xhigh (default, maps from Claude's thinking config)
+ *
+ * Activation:
+ *   CLAUDE_CODE_USE_CODEX=1
+ *
+ * Optional overrides:
+ *   CODEX_MODEL             — override model (default: gpt-5.4)
+ *   CODEX_EFFORT            — override effort (default: xhigh)
+ *   CODEX_BASE_URL          — override API base (default: https://chatgpt.com/backend-api/codex)
+ *   CODEX_HOME              — override config dir (default: ~/.codex)
  */
 
+import { readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 // ---------------------------------------------------------------------------
-// Types — we define minimal shapes so this file has no import dependencies on
-// the Anthropic SDK at the type level. The runtime only needs to produce
-// objects whose shapes match what claude.ts consumes via iteration.
+// Codex Auth — reads ~/.codex/auth.json, handles token refresh
+// ---------------------------------------------------------------------------
+
+const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+const AUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
+const DEFAULT_CODEX_BASE = 'https://chatgpt.com/backend-api/codex'
+const DEFAULT_MODEL = 'gpt-5.4'
+const DEFAULT_EFFORT = 'xhigh'
+// Refresh if token expires within this many seconds
+const REFRESH_MARGIN_S = 300
+
+interface CodexAuthData {
+  auth_mode: string
+  OPENAI_API_KEY: string | null
+  tokens?: {
+    id_token: string
+    access_token: string
+    refresh_token: string
+    account_id: string
+  }
+  last_refresh?: string
+}
+
+let cachedAuth: CodexAuthData | null = null
+let lastAuthReadMs = 0
+
+function getCodexHome(): string {
+  return process.env.CODEX_HOME || join(homedir(), '.codex')
+}
+
+function loadAuth(): CodexAuthData {
+  const now = Date.now()
+  // Re-read from disk at most every 30s (another process may have refreshed)
+  if (cachedAuth && now - lastAuthReadMs < 30_000) return cachedAuth
+  const authPath = join(getCodexHome(), 'auth.json')
+  const raw = readFileSync(authPath, 'utf-8')
+  cachedAuth = JSON.parse(raw) as CodexAuthData
+  lastAuthReadMs = now
+  return cachedAuth
+}
+
+function saveAuth(auth: CodexAuthData): void {
+  const authPath = join(getCodexHome(), 'auth.json')
+  writeFileSync(authPath, JSON.stringify(auth, null, 2) + '\n', 'utf-8')
+  cachedAuth = auth
+  lastAuthReadMs = Date.now()
+}
+
+function decodeJwtExp(jwt: string): number | null {
+  try {
+    const payload = jwt.split('.')[1]
+    if (!payload) return null
+    const json = Buffer.from(payload, 'base64url').toString('utf-8')
+    const data = JSON.parse(json)
+    return typeof data.exp === 'number' ? data.exp : null
+  } catch {
+    return null
+  }
+}
+
+async function ensureFreshToken(): Promise<CodexAuthData> {
+  const auth = loadAuth()
+
+  // API key mode — no refresh needed
+  if (auth.auth_mode === 'api_key' || !auth.tokens) return auth
+
+  // Check access_token expiry
+  const exp = decodeJwtExp(auth.tokens.access_token)
+  const now = Math.floor(Date.now() / 1000)
+  if (exp && exp - now > REFRESH_MARGIN_S) return auth
+
+  // Token expired or about to — refresh
+  const resp = await fetch(AUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      client_id: CODEX_CLIENT_ID,
+      grant_type: 'refresh_token',
+      refresh_token: auth.tokens.refresh_token,
+    }),
+  })
+
+  if (!resp.ok) {
+    const body = await resp.text()
+    throw new Error(`Codex token refresh failed (${resp.status}): ${body}`)
+  }
+
+  const data = await resp.json() as Record<string, string>
+
+  // Update only fields that came back
+  if (data.access_token) auth.tokens.access_token = data.access_token
+  if (data.id_token) auth.tokens.id_token = data.id_token
+  if (data.refresh_token) auth.tokens.refresh_token = data.refresh_token
+  auth.last_refresh = new Date().toISOString()
+
+  saveAuth(auth)
+  return auth
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic message/tool types (minimal shapes)
 // ---------------------------------------------------------------------------
 
 interface AnthropicTextBlock {
   type: 'text'
   text: string
-  cache_control?: { type: string; ttl?: string }
-}
-
-interface AnthropicThinkingBlock {
-  type: 'thinking'
-  thinking: string
+  cache_control?: unknown
 }
 
 interface AnthropicToolUseBlock {
@@ -39,7 +143,7 @@ interface AnthropicToolUseBlock {
 interface AnthropicToolResultBlock {
   type: 'tool_result'
   tool_use_id: string
-  content: string | Array<{ type: 'text'; text: string } | { type: 'image'; source: unknown }>
+  content: string | Array<{ type: 'text'; text: string } | { type: string; [k: string]: unknown }>
   is_error?: boolean
 }
 
@@ -50,7 +154,7 @@ interface AnthropicImageBlock {
 
 type AnthropicContentBlock =
   | AnthropicTextBlock
-  | AnthropicThinkingBlock
+  | { type: 'thinking'; thinking: string }
   | AnthropicToolUseBlock
   | AnthropicToolResultBlock
   | AnthropicImageBlock
@@ -74,142 +178,41 @@ interface AnthropicTool {
   cache_control?: unknown
 }
 
-// OpenAI types
-interface OpenAIMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null | Array<{ type: string; text?: string; image_url?: { url: string } }>
-  tool_calls?: OpenAIToolCall[]
-  tool_call_id?: string
-  name?: string
-}
-
-interface OpenAIToolCall {
-  id: string
-  type: 'function'
-  function: {
-    name: string
-    arguments: string
-  }
-}
-
-interface OpenAITool {
-  type: 'function'
-  function: {
-    name: string
-    description: string
-    parameters: Record<string, unknown>
-    strict?: boolean
-  }
-}
-
-interface OpenAIStreamChunk {
-  id: string
-  object: string
-  created: number
-  model: string
-  choices: Array<{
-    index: number
-    delta: {
-      role?: string
-      content?: string | null
-      tool_calls?: Array<{
-        index: number
-        id?: string
-        type?: string
-        function?: {
-          name?: string
-          arguments?: string
-        }
-      }>
-    }
-    finish_reason: string | null
-  }>
-  usage?: {
-    prompt_tokens: number
-    completion_tokens: number
-    total_tokens: number
-  }
-}
-
-// Anthropic stream event types (minimal shapes for what claude.ts consumes)
-interface BetaRawMessageStartEvent {
-  type: 'message_start'
-  message: {
-    id: string
-    type: 'message'
-    role: 'assistant'
-    content: never[]
-    model: string
-    stop_reason: null
-    stop_sequence: null
-    usage: { input_tokens: number; output_tokens: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
-  }
-}
-
-interface BetaRawContentBlockStartEvent {
-  type: 'content_block_start'
-  index: number
-  content_block: { type: 'text'; text: '' } | { type: 'tool_use'; id: string; name: string; input: Record<string, never> }
-}
-
-interface BetaRawContentBlockDeltaEvent {
-  type: 'content_block_delta'
-  index: number
-  delta: { type: 'text_delta'; text: string } | { type: 'input_json_delta'; partial_json: string }
-}
-
-interface BetaRawContentBlockStopEvent {
-  type: 'content_block_stop'
-  index: number
-}
-
-interface BetaRawMessageDeltaEvent {
-  type: 'message_delta'
-  delta: { stop_reason: string; stop_sequence: null }
-  usage: { output_tokens: number }
-}
-
-interface BetaRawMessageStopEvent {
-  type: 'message_stop'
-}
-
-type BetaRawMessageStreamEvent =
-  | BetaRawMessageStartEvent
-  | BetaRawContentBlockStartEvent
-  | BetaRawContentBlockDeltaEvent
-  | BetaRawContentBlockStopEvent
-  | BetaRawMessageDeltaEvent
-  | BetaRawMessageStopEvent
-
 // ---------------------------------------------------------------------------
-// Translation helpers
+// Responses API input/output types
 // ---------------------------------------------------------------------------
 
-function generateId(): string {
-  return 'chatcmpl-' + Math.random().toString(36).slice(2, 15)
+type ResponsesInputItem =
+  | { role: 'user' | 'assistant' | 'system'; content: string | ResponsesContentPart[] }
+  | { type: 'function_call'; call_id: string; name: string; arguments: string; id?: string }
+  | { type: 'function_call_output'; call_id: string; output: string }
+
+interface ResponsesContentPart {
+  type: 'input_text' | 'input_image'
+  text?: string
+  image_url?: string
 }
 
-function generateToolCallId(): string {
-  return 'call_' + Math.random().toString(36).slice(2, 15)
+interface ResponsesTool {
+  type: 'function'
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+  strict?: boolean
 }
 
-/**
- * Convert Anthropic system blocks → single OpenAI system message
- */
-function translateSystem(system: AnthropicSystemBlock[] | string | undefined): OpenAIMessage[] {
-  if (!system) return []
-  if (typeof system === 'string') {
-    return [{ role: 'system', content: system }]
-  }
-  const text = system.map(b => b.text).join('\n\n')
-  return text ? [{ role: 'system', content: text }] : []
+// ---------------------------------------------------------------------------
+// Message translation: Anthropic → Responses API
+// ---------------------------------------------------------------------------
+
+function translateSystem(system: AnthropicSystemBlock[] | string | undefined): string {
+  if (!system) return ''
+  if (typeof system === 'string') return system
+  return system.map(b => b.text).join('\n\n')
 }
 
-/**
- * Convert Anthropic messages → OpenAI messages
- */
-function translateMessages(messages: AnthropicMessage[]): OpenAIMessage[] {
-  const result: OpenAIMessage[] = []
+function translateMessages(messages: AnthropicMessage[]): ResponsesInputItem[] {
+  const result: ResponsesInputItem[] = []
 
   for (const msg of messages) {
     if (msg.role === 'user') {
@@ -218,45 +221,38 @@ function translateMessages(messages: AnthropicMessage[]): OpenAIMessage[] {
         continue
       }
 
-      // User message with content blocks — may contain tool_result blocks
       const textParts: string[] = []
-      const imageParts: Array<{ type: string; text?: string; image_url?: { url: string } }> = []
-      const toolResults: AnthropicToolResultBlock[] = []
+      const contentParts: ResponsesContentPart[] = []
+      let hasImages = false
 
       for (const block of msg.content) {
         if (block.type === 'text') {
           textParts.push(block.text)
+          contentParts.push({ type: 'input_text', text: block.text })
         } else if (block.type === 'tool_result') {
-          toolResults.push(block as AnthropicToolResultBlock)
+          const tr = block as AnthropicToolResultBlock
+          const output = typeof tr.content === 'string'
+            ? tr.content
+            : tr.content.map(c => c.type === 'text' ? c.text : '[binary]').join('\n')
+          result.push({
+            type: 'function_call_output',
+            call_id: tr.tool_use_id,
+            output: (tr.is_error ? '[ERROR] ' : '') + output,
+          })
         } else if (block.type === 'image') {
-          const imgBlock = block as AnthropicImageBlock
-          imageParts.push({
-            type: 'image_url',
-            image_url: { url: `data:${imgBlock.source.media_type};base64,${imgBlock.source.data}` },
+          const img = block as AnthropicImageBlock
+          hasImages = true
+          contentParts.push({
+            type: 'input_image',
+            image_url: `data:${img.source.media_type};base64,${img.source.data}`,
           })
         }
       }
 
-      // Emit tool result messages first (OpenAI format: role=tool)
-      for (const tr of toolResults) {
-        const content = typeof tr.content === 'string'
-          ? tr.content
-          : tr.content.map(c => c.type === 'text' ? c.text : '[image]').join('\n')
-        result.push({
-          role: 'tool',
-          tool_call_id: tr.tool_use_id,
-          content: (tr.is_error ? '[ERROR] ' : '') + content,
-        })
-      }
-
-      // Emit user text/image if any remain
-      if (textParts.length > 0 || imageParts.length > 0) {
-        if (imageParts.length > 0) {
-          const content = [
-            ...textParts.map(t => ({ type: 'text' as const, text: t })),
-            ...imageParts,
-          ]
-          result.push({ role: 'user', content })
+      // Emit user text/image content if any
+      if (textParts.length > 0 || hasImages) {
+        if (hasImages) {
+          result.push({ role: 'user', content: contentParts })
         } else {
           result.push({ role: 'user', content: textParts.join('\n') })
         }
@@ -267,80 +263,110 @@ function translateMessages(messages: AnthropicMessage[]): OpenAIMessage[] {
         continue
       }
 
-      // Assistant message — may contain text + tool_use blocks
       const textParts: string[] = []
-      const toolCalls: OpenAIToolCall[] = []
 
       for (const block of msg.content) {
         if (block.type === 'text') {
           textParts.push(block.text)
-        } else if (block.type === 'thinking') {
-          // Include thinking as prefixed text (OpenAI has no native thinking blocks)
-          // Skip to avoid noise — the model will think internally via reasoning_effort
         } else if (block.type === 'tool_use') {
-          const tuBlock = block as AnthropicToolUseBlock
-          toolCalls.push({
-            id: tuBlock.id,
-            type: 'function',
-            function: {
-              name: tuBlock.name,
-              arguments: JSON.stringify(tuBlock.input),
-            },
+          // Flush accumulated text before tool calls
+          if (textParts.length > 0) {
+            result.push({ role: 'assistant', content: textParts.join('\n') })
+            textParts.length = 0
+          }
+          const tu = block as AnthropicToolUseBlock
+          result.push({
+            type: 'function_call',
+            call_id: tu.id,
+            name: tu.name,
+            arguments: JSON.stringify(tu.input),
           })
         }
+        // Skip 'thinking' blocks — Responses API uses reasoning internally
       }
 
-      const assistantMsg: OpenAIMessage = {
-        role: 'assistant',
-        content: textParts.join('\n') || null,
+      if (textParts.length > 0) {
+        result.push({ role: 'assistant', content: textParts.join('\n') })
       }
-      if (toolCalls.length > 0) {
-        assistantMsg.tool_calls = toolCalls
-      }
-      result.push(assistantMsg)
     }
   }
 
   return result
 }
 
-/**
- * Convert Anthropic tool definitions → OpenAI function tools
- */
-function translateTools(tools: AnthropicTool[] | undefined): OpenAITool[] | undefined {
+function translateTools(tools: AnthropicTool[] | undefined): ResponsesTool[] | undefined {
   if (!tools || tools.length === 0) return undefined
   return tools
-    .filter(t => !t.type || t.type === 'custom') // skip server tools, computer_use etc.
+    .filter(t => !t.type || t.type === 'custom')
     .map(t => ({
       type: 'function' as const,
-      function: {
-        name: t.name,
-        description: t.description || '',
-        parameters: t.input_schema || { type: 'object', properties: {} },
-      },
+      name: t.name,
+      description: t.description || '',
+      parameters: t.input_schema || { type: 'object', properties: {} },
+      strict: false,
     }))
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI stream → Anthropic stream event translator
+// Effort mapping: Claude thinking config → Codex reasoning effort
 // ---------------------------------------------------------------------------
 
-class OpenAIStreamToAnthropicStream {
+function resolveEffort(params: Record<string, unknown>): string {
+  // Explicit env override
+  const envEffort = process.env.CODEX_EFFORT
+  if (envEffort) return envEffort
+
+  // Map from Claude's thinking config
+  const thinking = params.thinking as { type: string; budget_tokens?: number } | undefined
+  if (!thinking || thinking.type === 'disabled') return DEFAULT_EFFORT
+
+  // Budget-based mapping
+  if (thinking.budget_tokens) {
+    if (thinking.budget_tokens >= 32000) return 'xhigh'
+    if (thinking.budget_tokens >= 16000) return 'high'
+    if (thinking.budget_tokens >= 4000) return 'medium'
+    return 'low'
+  }
+
+  // Adaptive thinking → xhigh
+  return DEFAULT_EFFORT
+}
+
+// ---------------------------------------------------------------------------
+// Generate unique IDs
+// ---------------------------------------------------------------------------
+
+function genId(prefix = 'msg'): string {
+  return `${prefix}_${Math.random().toString(36).slice(2, 15)}`
+}
+
+// ---------------------------------------------------------------------------
+// Responses API SSE stream → Anthropic stream event translator
+// ---------------------------------------------------------------------------
+
+type AnyStreamEvent =
+  | { type: 'message_start'; message: unknown }
+  | { type: 'content_block_start'; index: number; content_block: unknown }
+  | { type: 'content_block_delta'; index: number; delta: unknown }
+  | { type: 'content_block_stop'; index: number }
+  | { type: 'message_delta'; delta: unknown; usage: unknown }
+  | { type: 'message_stop' }
+
+class ResponsesStreamToAnthropicStream {
   private reader: ReadableStreamDefaultReader<Uint8Array>
   private decoder = new TextDecoder()
   private buffer = ''
   private model: string
-  private requestId: string
-  private contentBlockIndex = 0
-  private currentToolCalls: Map<number, { id: string; name: string; args: string }> = new Map()
-  private hasStartedTextBlock = false
+  private responseId = ''
+  private anthropicBlockIndex = 0
+  private currentTextBlockOpen = false
+  private toolCallBlocks: Map<number, { callId: string; name: string }> = new Map()
   private totalOutputTokens = 0
   private inputTokens = 0
-  private finishReason: string | null = null
+  private finishReason = 'end_turn'
   private done = false
 
-  // Implements the controller property check that claude.ts uses to
-  // distinguish stream objects from error message objects.
+  // claude.ts checks for this property to distinguish stream from error objects
   readonly controller = {} as AbortController
 
   constructor(
@@ -349,18 +375,17 @@ class OpenAIStreamToAnthropicStream {
   ) {
     this.reader = response.body!.getReader()
     this.model = model
-    this.requestId = response.headers.get('x-request-id') || generateId()
   }
 
-  async *[Symbol.asyncIterator](): AsyncGenerator<BetaRawMessageStreamEvent> {
-    // Emit message_start first
+  async *[Symbol.asyncIterator](): AsyncGenerator<AnyStreamEvent> {
+    // Emit message_start
     yield {
       type: 'message_start',
       message: {
-        id: this.requestId,
+        id: this.responseId || genId('msg'),
         type: 'message',
         role: 'assistant',
-        content: [] as never[],
+        content: [],
         model: this.model,
         stop_reason: null,
         stop_sequence: null,
@@ -368,27 +393,35 @@ class OpenAIStreamToAnthropicStream {
       },
     }
 
-    // Read and parse SSE chunks
+    // Read SSE stream
     while (!this.done) {
       const { done, value } = await this.reader.read()
       if (done) break
 
       this.buffer += this.decoder.decode(value, { stream: true })
       const lines = this.buffer.split('\n')
-      this.buffer = lines.pop()! // keep incomplete line in buffer
+      this.buffer = lines.pop()!
 
+      let currentEvent = ''
       for (const line of lines) {
         const trimmed = line.trim()
-        if (!trimmed || trimmed.startsWith(':')) continue // skip empty lines and comments
-        if (trimmed === 'data: [DONE]') {
-          this.done = true
-          break
+        if (!trimmed) {
+          currentEvent = ''
+          continue
+        }
+        if (trimmed.startsWith('event: ')) {
+          currentEvent = trimmed.slice(7)
+          continue
         }
         if (trimmed.startsWith('data: ')) {
-          const json = trimmed.slice(6)
+          const dataStr = trimmed.slice(6)
+          if (dataStr === '[DONE]') {
+            this.done = true
+            break
+          }
           try {
-            const chunk: OpenAIStreamChunk = JSON.parse(json)
-            yield* this.processChunk(chunk)
+            const data = JSON.parse(dataStr)
+            yield* this.processEvent(currentEvent, data)
           } catch {
             // skip malformed JSON
           }
@@ -397,28 +430,17 @@ class OpenAIStreamToAnthropicStream {
     }
 
     // Close any open text block
-    if (this.hasStartedTextBlock) {
-      yield {
-        type: 'content_block_stop',
-        index: this.contentBlockIndex,
-      }
-      this.contentBlockIndex++
-    }
-
-    // Close any open tool call blocks
-    for (const [, _tc] of this.currentToolCalls) {
-      yield {
-        type: 'content_block_stop',
-        index: this.contentBlockIndex,
-      }
-      this.contentBlockIndex++
+    if (this.currentTextBlockOpen) {
+      yield { type: 'content_block_stop', index: this.anthropicBlockIndex }
+      this.anthropicBlockIndex++
+      this.currentTextBlockOpen = false
     }
 
     // Emit message_delta + message_stop
     yield {
       type: 'message_delta',
       delta: {
-        stop_reason: this.finishReason === 'tool_calls' ? 'tool_use' : 'end_turn',
+        stop_reason: this.finishReason,
         stop_sequence: null,
       },
       usage: { output_tokens: this.totalOutputTokens },
@@ -427,82 +449,141 @@ class OpenAIStreamToAnthropicStream {
     yield { type: 'message_stop' }
   }
 
-  private *processChunk(chunk: OpenAIStreamChunk): Generator<BetaRawMessageStreamEvent> {
-    if (chunk.usage) {
-      this.inputTokens = chunk.usage.prompt_tokens || 0
-      this.totalOutputTokens = chunk.usage.completion_tokens || 0
-    }
+  private *processEvent(event: string, data: Record<string, unknown>): Generator<AnyStreamEvent> {
+    switch (event) {
+      case 'response.created':
+      case 'response.in_progress':
+        if (data.id) this.responseId = data.id as string
+        break
 
-    for (const choice of chunk.choices || []) {
-      if (choice.finish_reason) {
-        this.finishReason = choice.finish_reason
-      }
+      case 'response.output_item.added': {
+        const item = data.item as Record<string, unknown>
+        if (!item) break
 
-      const delta = choice.delta
-
-      // Text content
-      if (delta.content) {
-        if (!this.hasStartedTextBlock) {
-          this.hasStartedTextBlock = true
+        if (item.type === 'message') {
+          // Text message output starting — we'll open the block on first delta
+        } else if (item.type === 'function_call') {
+          // Close text block if open
+          if (this.currentTextBlockOpen) {
+            yield { type: 'content_block_stop', index: this.anthropicBlockIndex }
+            this.anthropicBlockIndex++
+            this.currentTextBlockOpen = false
+          }
+          // Start tool_use block
+          const outputIndex = data.output_index as number
+          const callId = (item.call_id as string) || genId('call')
+          const name = (item.name as string) || ''
+          this.toolCallBlocks.set(outputIndex, { callId, name })
           yield {
             type: 'content_block_start',
-            index: this.contentBlockIndex,
-            content_block: { type: 'text', text: '' as '' },
+            index: this.anthropicBlockIndex,
+            content_block: {
+              type: 'tool_use',
+              id: callId,
+              name,
+              input: {},
+            },
+          }
+        }
+        break
+      }
+
+      case 'response.content_part.added':
+        // Text content part starting — open text block if not already open
+        if (!this.currentTextBlockOpen) {
+          this.currentTextBlockOpen = true
+          yield {
+            type: 'content_block_start',
+            index: this.anthropicBlockIndex,
+            content_block: { type: 'text', text: '' },
+          }
+        }
+        break
+
+      case 'response.output_text.delta': {
+        const delta = data.delta as string
+        if (!delta) break
+        if (!this.currentTextBlockOpen) {
+          this.currentTextBlockOpen = true
+          yield {
+            type: 'content_block_start',
+            index: this.anthropicBlockIndex,
+            content_block: { type: 'text', text: '' },
           }
         }
         yield {
           type: 'content_block_delta',
-          index: this.contentBlockIndex,
-          delta: { type: 'text_delta', text: delta.content },
+          index: this.anthropicBlockIndex,
+          delta: { type: 'text_delta', text: delta },
         }
+        break
       }
 
-      // Tool calls
-      if (delta.tool_calls) {
-        // Close text block before tool calls if open
-        if (this.hasStartedTextBlock) {
-          yield {
-            type: 'content_block_stop',
-            index: this.contentBlockIndex,
-          }
-          this.contentBlockIndex++
-          this.hasStartedTextBlock = false
+      case 'response.output_text.done':
+        // Text done — close text block
+        if (this.currentTextBlockOpen) {
+          yield { type: 'content_block_stop', index: this.anthropicBlockIndex }
+          this.anthropicBlockIndex++
+          this.currentTextBlockOpen = false
         }
+        break
 
-        for (const tc of delta.tool_calls) {
-          if (!this.currentToolCalls.has(tc.index)) {
-            // New tool call starting
-            const id = tc.id || generateToolCallId()
-            const name = tc.function?.name || ''
-            this.currentToolCalls.set(tc.index, { id, name, args: '' })
-
-            yield {
-              type: 'content_block_start',
-              index: this.contentBlockIndex + tc.index,
-              content_block: {
-                type: 'tool_use',
-                id,
-                name,
-                input: {} as Record<string, never>,
-              },
-            }
-          }
-
-          // Accumulate arguments
-          if (tc.function?.arguments) {
-            const existing = this.currentToolCalls.get(tc.index)!
-            existing.args += tc.function.arguments
-            yield {
-              type: 'content_block_delta',
-              index: this.contentBlockIndex + tc.index,
-              delta: {
-                type: 'input_json_delta',
-                partial_json: tc.function.arguments,
-              },
-            }
-          }
+      case 'response.function_call_arguments.delta': {
+        const argsDelta = data.delta as string
+        if (!argsDelta) break
+        yield {
+          type: 'content_block_delta',
+          index: this.anthropicBlockIndex,
+          delta: { type: 'input_json_delta', partial_json: argsDelta },
         }
+        break
       }
+
+      case 'response.function_call_arguments.done':
+        // Function call complete — close block
+        yield { type: 'content_block_stop', index: this.anthropicBlockIndex }
+        this.anthropicBlockIndex++
+        break
+
+      case 'response.output_item.done':
+        // Item done — already handled by text.done / arguments.done
+        break
+
+      case 'response.completed': {
+        const status = data.status as string
+        if (status === 'completed') {
+          // Check if there were tool calls → stop_reason = tool_use
+          const output = data.output as Array<Record<string, unknown>> | undefined
+          if (output?.some(o => o.type === 'function_call')) {
+            this.finishReason = 'tool_use'
+          }
+        }
+        // Extract usage
+        const usage = data.usage as Record<string, number> | undefined
+        if (usage) {
+          this.inputTokens = usage.input_tokens || 0
+          this.totalOutputTokens = usage.output_tokens || 0
+        }
+        this.done = true
+        break
+      }
+
+      case 'response.failed': {
+        const error = data.error as Record<string, string> | undefined
+        const errMsg = error?.message || 'Unknown error from Responses API'
+        throw new Error(`Codex API error: ${errMsg}`)
+      }
+
+      // Reasoning events — skip (internal thinking)
+      case 'response.reasoning_summary_text.delta':
+      case 'response.reasoning_summary_text.done':
+      case 'response.reasoning_summary_part.added':
+      case 'response.reasoning_summary_part.done':
+        break
+
+      default:
+        // Unknown event — skip silently
+        break
     }
   }
 }
@@ -512,10 +593,6 @@ class OpenAIStreamToAnthropicStream {
 // ---------------------------------------------------------------------------
 
 export class OpenAIAdapter {
-  private apiKey: string
-  private baseURL: string
-  private organization?: string
-  private defaultHeaders: Record<string, string>
   private timeout: number
 
   beta: {
@@ -525,7 +602,7 @@ export class OpenAIAdapter {
         options?: Record<string, unknown>,
       ) => {
         withResponse: () => Promise<{
-          data: OpenAIStreamToAnthropicStream
+          data: ResponsesStreamToAnthropicStream
           request_id: string
           response: Response
         }>
@@ -534,20 +611,11 @@ export class OpenAIAdapter {
   }
 
   constructor(config: {
-    apiKey?: string | null
-    defaultHeaders?: Record<string, string>
-    maxRetries?: number
     timeout?: number
-    dangerouslyAllowBrowser?: boolean
     [key: string]: unknown
   }) {
-    this.apiKey = config.apiKey || process.env.OPENAI_API_KEY || ''
-    this.baseURL = (process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '')
-    this.organization = process.env.OPENAI_ORGANIZATION
-    this.defaultHeaders = config.defaultHeaders || {}
     this.timeout = config.timeout || 600_000
 
-    // Bind the beta.messages.create method
     const self = this
     this.beta = {
       messages: {
@@ -555,11 +623,11 @@ export class OpenAIAdapter {
           return {
             async withResponse() {
               const response = await self.makeRequest(params, options)
-              const model = (params.model as string) || 'unknown'
-              const stream = new OpenAIStreamToAnthropicStream(response, model)
+              const model = (process.env.CODEX_MODEL || DEFAULT_MODEL)
+              const stream = new ResponsesStreamToAnthropicStream(response, model)
               return {
                 data: stream,
-                request_id: response.headers.get('x-request-id') || generateId(),
+                request_id: response.headers.get('x-request-id') || genId('req'),
                 response,
               }
             },
@@ -573,77 +641,82 @@ export class OpenAIAdapter {
     params: Record<string, unknown>,
     options?: Record<string, unknown>,
   ): Promise<Response> {
-    const model = resolveOpenAIModel(params.model as string)
-    const messages = translateMessages(params.messages as AnthropicMessage[])
-    const systemMessages = translateSystem(params.system as AnthropicSystemBlock[] | string | undefined)
+    // Get fresh auth token
+    const auth = await ensureFreshToken()
+
+    const model = process.env.CODEX_MODEL || DEFAULT_MODEL
+    const baseURL = (process.env.CODEX_BASE_URL || DEFAULT_CODEX_BASE).replace(/\/$/, '')
+    const effort = resolveEffort(params)
+
+    // Translate Anthropic params → Responses API
+    const instructions = translateSystem(params.system as AnthropicSystemBlock[] | string | undefined)
+    const input = translateMessages(params.messages as AnthropicMessage[])
     const tools = translateTools(params.tools as AnthropicTool[] | undefined)
 
-    // Build OpenAI request body
     const body: Record<string, unknown> = {
       model,
-      messages: [...systemMessages, ...messages],
+      input,
       stream: true,
-      stream_options: { include_usage: true },
     }
 
-    // Max tokens
-    const maxTokens = params.max_tokens as number | undefined
-    if (maxTokens) {
-      // o-series models use max_completion_tokens, others use max_tokens
-      if (model.startsWith('o')) {
-        body.max_completion_tokens = maxTokens
-      } else {
-        body.max_tokens = maxTokens
-      }
+    if (instructions) {
+      body.instructions = instructions
+    }
+
+    // Reasoning/effort
+    body.reasoning = {
+      effort,
+      summary: 'concise',
     }
 
     // Tools
     if (tools && tools.length > 0) {
       body.tools = tools
-      // Allow the model to choose when to use tools
-      body.tool_choice = 'auto'
     }
 
-    // Temperature — o-series doesn't support temperature
-    if (!model.startsWith('o')) {
-      const temp = params.temperature as number | undefined
-      if (temp !== undefined) {
-        body.temperature = temp
-      }
+    // Max output tokens
+    const maxTokens = params.max_tokens as number | undefined
+    if (maxTokens) {
+      body.max_output_tokens = maxTokens
     }
 
-    // Reasoning effort for o-series models (map from thinking config)
-    if (model.startsWith('o')) {
-      const thinking = params.thinking as { type: string; budget_tokens?: number } | undefined
-      if (thinking && thinking.type !== 'disabled') {
-        // Map thinking budget to reasoning_effort
-        body.reasoning_effort = 'high'
-      }
+    // Temperature — Responses API supports it for non-reasoning models
+    const temp = params.temperature as number | undefined
+    if (temp !== undefined && !model.startsWith('o')) {
+      body.temperature = temp
     }
 
     // Build headers
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${this.apiKey}`,
-      ...this.defaultHeaders,
     }
-    if (this.organization) {
-      headers['OpenAI-Organization'] = this.organization
+
+    if (auth.auth_mode === 'api_key' && auth.OPENAI_API_KEY) {
+      // API key mode
+      headers['Authorization'] = `Bearer ${auth.OPENAI_API_KEY}`
+    } else if (auth.tokens) {
+      // ChatGPT OAuth mode
+      headers['Authorization'] = `Bearer ${auth.tokens.access_token}`
+      if (auth.tokens.account_id) {
+        headers['ChatGPT-Account-ID'] = auth.tokens.account_id
+      }
+    } else {
+      throw new Error(
+        'No Codex auth found. Run `codex` first to authenticate, or set CODEX_API_KEY.',
+      )
     }
 
     // Forward abort signal
     const signal = (options?.signal as AbortSignal) || undefined
-
     const controller = new AbortController()
     if (signal) {
       signal.addEventListener('abort', () => controller.abort())
     }
 
-    // Timeout
     const timeoutId = setTimeout(() => controller.abort(), this.timeout)
 
     try {
-      const response = await fetch(`${this.baseURL}/chat/completions`, {
+      const response = await fetch(`${baseURL}/responses`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
@@ -654,9 +727,8 @@ export class OpenAIAdapter {
 
       if (!response.ok) {
         const errorBody = await response.text()
-        // Translate OpenAI errors to Anthropic-style errors for withRetry compatibility
         const status = response.status
-        const error = new Error(`OpenAI API error ${status}: ${errorBody}`) as Error & {
+        const error = new Error(`Codex API error ${status}: ${errorBody}`) as Error & {
           status: number
           error?: { type: string; message: string }
         }
@@ -664,12 +736,33 @@ export class OpenAIAdapter {
         try {
           const parsed = JSON.parse(errorBody)
           error.error = {
-            type: status === 429 ? 'rate_limit_error' : status === 401 ? 'authentication_error' : 'api_error',
-            message: parsed?.error?.message || errorBody,
+            type: status === 429 ? 'rate_limit_error'
+              : status === 401 ? 'authentication_error'
+              : 'api_error',
+            message: parsed?.error?.message || parsed?.detail || errorBody,
           }
         } catch {
           error.error = { type: 'api_error', message: errorBody }
         }
+
+        // If 401 and we have refresh token, try one more time after force-refresh
+        if (status === 401 && auth.tokens?.refresh_token) {
+          clearTimeout(timeoutId)
+          cachedAuth = null  // force re-read
+          lastAuthReadMs = 0
+          const freshAuth = await ensureFreshToken()
+          if (freshAuth.tokens) {
+            headers['Authorization'] = `Bearer ${freshAuth.tokens.access_token}`
+            const retryResponse = await fetch(`${baseURL}/responses`, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(body),
+              signal: controller.signal,
+            })
+            if (retryResponse.ok) return retryResponse
+          }
+        }
+
         throw error
       }
 
@@ -680,69 +773,3 @@ export class OpenAIAdapter {
     }
   }
 }
-
-// ---------------------------------------------------------------------------
-// Model mapping: Anthropic model IDs → OpenAI model IDs
-// ---------------------------------------------------------------------------
-
-const MODEL_MAP: Record<string, string> = {
-  // Direct OpenAI model names (passthrough)
-  'o3': 'o3',
-  'o4-mini': 'o4-mini',
-  'gpt-4.1': 'gpt-4.1',
-  'gpt-4.1-mini': 'gpt-4.1-mini',
-  'gpt-4.1-nano': 'gpt-4.1-nano',
-  'gpt-4o': 'gpt-4o',
-  'gpt-4o-mini': 'gpt-4o-mini',
-  'codex-mini': 'codex-mini-latest',
-
-  // Map Claude model names → OpenAI equivalents
-  // Opus (most capable) → o3
-  'claude-opus-4-6': 'o3',
-  'claude-opus-4-5': 'o3',
-  'claude-opus-4-1': 'o3',
-  'claude-opus-4': 'o3',
-
-  // Sonnet (balanced) → gpt-4.1
-  'claude-sonnet-4-6': 'gpt-4.1',
-  'claude-sonnet-4-5': 'gpt-4.1',
-  'claude-sonnet-4': 'gpt-4.1',
-  'claude-3-7-sonnet': 'gpt-4.1',
-  'claude-3-5-sonnet': 'gpt-4.1',
-
-  // Haiku (fast) → gpt-4.1-mini
-  'claude-haiku-4-5': 'gpt-4.1-mini',
-  'claude-3-5-haiku': 'gpt-4.1-mini',
-}
-
-function resolveOpenAIModel(anthropicModel: string): string {
-  // Check env override first
-  const envModel = process.env.OPENAI_MODEL
-  if (envModel) return envModel
-
-  // Direct match
-  if (MODEL_MAP[anthropicModel]) return MODEL_MAP[anthropicModel]
-
-  // Prefix match (handles dated versions like claude-opus-4-6-20260101)
-  for (const [prefix, mapped] of Object.entries(MODEL_MAP)) {
-    if (anthropicModel.startsWith(prefix)) return mapped
-  }
-
-  // Provider-specific model strings (bedrock, vertex format) → strip provider prefix
-  const stripped = anthropicModel
-    .replace(/^us\.anthropic\./, '')
-    .replace(/-v\d+:\d+$/, '')
-    .replace(/@\d+$/, '')
-  if (MODEL_MAP[stripped]) return MODEL_MAP[stripped]
-
-  // If it looks like an OpenAI model already, pass through
-  if (anthropicModel.startsWith('gpt-') || anthropicModel.startsWith('o') || anthropicModel.startsWith('codex-')) {
-    return anthropicModel
-  }
-
-  // Default fallback
-  return 'o3'
-}
-
-// Exported for use in model display
-export { resolveOpenAIModel, MODEL_MAP }

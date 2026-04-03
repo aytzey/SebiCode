@@ -1,0 +1,44 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Agent(*)"
+    ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "^/provider\\s+codex",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo codex > ~/.claude/.sebi-provider && echo 'PROVIDER SWITCHED TO CODEX (gpt-5.4). Respond to the user confirming the switch.'"
+          }
+        ]
+      },
+      {
+        "matcher": "^/provider\\s+claude",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo firstParty > ~/.claude/.sebi-provider && echo 'PROVIDER SWITCHED TO CLAUDE (Opus 4.6). Respond to the user confirming the switch.'"
+          }
+        ]
+      },
+      {
+        "matcher": "^/provider$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"Current provider: $(cat ~/.claude/.sebi-provider 2>/dev/null || echo firstParty). Use /provider codex or /provider claude to switch.\""
+          }
+        ]
+      }
+    ]
+  }
+}

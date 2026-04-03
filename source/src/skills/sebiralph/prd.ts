@@ -54,14 +54,18 @@ export function validatePlan(plan: RalphPlan): { valid: boolean; errors: string[
     if (count > 1) errors.push(`Task ${task.id} assigned to multiple waves`)
   }
   for (const wave of plan.waves) {
-    const pathOwners = new Map<string, string>()
+    const pathOwners: Array<{ path: string; taskId: string }> = []
     for (const taskId of wave.taskIds) {
       const task = plan.tasks.find(t => t.id === taskId)
       if (!task) continue
       for (const path of task.ownedPaths) {
-        const existing = pathOwners.get(path)
-        if (existing) errors.push(`Wave ${wave.wave}: path \`${path}\` owned by both ${existing} and ${taskId}`)
-        pathOwners.set(path, taskId)
+        // Check exact match and prefix overlaps (e.g. "src/" and "src/api/")
+        for (const existing of pathOwners) {
+          if (existing.path === path || path.startsWith(existing.path) || existing.path.startsWith(path)) {
+            errors.push(`Wave ${wave.wave}: path \`${path}\` (${taskId}) overlaps with \`${existing.path}\` (${existing.taskId})`)
+          }
+        }
+        pathOwners.push({ path, taskId })
       }
     }
   }

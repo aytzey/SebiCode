@@ -11,6 +11,7 @@ import {
 // namespace after mock.module() (daemon/auth.test.ts), breaking spyOn.
 import * as authModule from '../utils/auth.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
+import { getAPIProvider } from '../utils/model/providers.js'
 import { lt } from '../utils/semver.js'
 
 /**
@@ -30,8 +31,14 @@ export function isBridgeEnabled(): boolean {
   // Negative pattern (if (!feature(...)) return) does not eliminate
   // inline string literals from external builds.
   return feature('BRIDGE_MODE')
-    ? isClaudeAISubscriber() &&
-        getFeatureValue_CACHED_MAY_BE_STALE('tengu_ccr_bridge', false)
+    ? // Standard path: subscriber + GrowthBook gate
+      (isClaudeAISubscriber() &&
+        getFeatureValue_CACHED_MAY_BE_STALE('tengu_ccr_bridge', false)) ||
+      // Codex mode: bridge works locally, just need OAuth for API registration
+      (getAPIProvider() === 'codex' && hasAnthropicOAuthTokens()) ||
+      // Custom build bypass: if OAuth tokens exist, allow bridge without
+      // GrowthBook gate (the gate is for Anthropic's rollout, not for us)
+      (!isClaudeAISubscriber() && hasAnthropicOAuthTokens())
     : false
 }
 
@@ -49,8 +56,12 @@ export function isBridgeEnabled(): boolean {
  */
 export async function isBridgeEnabledBlocking(): Promise<boolean> {
   return feature('BRIDGE_MODE')
-    ? isClaudeAISubscriber() &&
-        (await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bridge'))
+    ? (isClaudeAISubscriber() &&
+        (await checkGate_CACHED_OR_BLOCKING('tengu_ccr_bridge'))) ||
+      // Codex mode bypass — same rationale as isBridgeEnabled()
+      (getAPIProvider() === 'codex' && hasAnthropicOAuthTokens()) ||
+      // Custom build bypass — same as isBridgeEnabled()
+      (!isClaudeAISubscriber() && hasAnthropicOAuthTokens())
     : false
 }
 
@@ -69,6 +80,13 @@ export async function isBridgeEnabledBlocking(): Promise<boolean> {
  */
 export async function getBridgeDisabledReason(): Promise<string | null> {
   if (feature('BRIDGE_MODE')) {
+    // Codex mode: bridge works if Anthropic OAuth is available
+    if (getAPIProvider() === 'codex') {
+      if (!hasAnthropicOAuthTokens()) {
+        return 'Remote Control in Codex mode requires Claude OAuth tokens. Run `claude auth login` first, then start Codex mode.'
+      }
+      return null // Codex + OAuth tokens = bridge allowed
+    }
     if (!isClaudeAISubscriber()) {
       return 'Remote Control requires a claude.ai subscription. Run `claude auth login` to sign in with your claude.ai account.'
     }
@@ -112,6 +130,18 @@ function getOauthAccountInfo(): ReturnType<
     return authModule.getOauthAccountInfo()
   } catch {
     return undefined
+  }
+}
+/**
+ * Check if Anthropic OAuth tokens exist regardless of provider mode.
+ * Used for Codex bridge bypass: the tokens are needed for bridge API
+ * registration even though the session uses Codex for inference.
+ */
+function hasAnthropicOAuthTokens(): boolean {
+  try {
+    return !!(authModule.getClaudeAIOAuthTokens()?.accessToken)
+  } catch {
+    return false
   }
 }
 

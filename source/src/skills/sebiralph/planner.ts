@@ -57,7 +57,7 @@ FIXES NEEDED:
 }
 
 export function parseEvaluatorVerdict(response: string): { approved: boolean; fixes: string[]; rawResponse: string } {
-  const approved = response.includes('VERDICT: APPROVED')
+  const approved = /VERDICT:\s*APPROVED/i.test(response)
   const fixes: string[] = []
   if (!approved) {
     const fixSection = response.split('FIXES NEEDED:')[1]

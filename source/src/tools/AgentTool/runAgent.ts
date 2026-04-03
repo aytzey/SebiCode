@@ -352,7 +352,7 @@ export async function* runAgent({
   // map the model to the target provider's equivalent to avoid sending
   // e.g. 'gpt-5.4' to Anthropic API or 'claude-opus-4-6' to OpenAI.
   if (providerOverride) {
-    const isOpenAIModel = resolvedAgentModel.startsWith('gpt-') || resolvedAgentModel.startsWith('o3') || resolvedAgentModel.startsWith('o4')
+    const isOpenAIModel = resolvedAgentModel.startsWith('gpt-') || /^o[1-9]/.test(resolvedAgentModel)
     const isAnthropicModel = resolvedAgentModel.startsWith('claude-')
 
     if (providerOverride === 'anthropic' && isOpenAIModel) {

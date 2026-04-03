@@ -38,19 +38,24 @@ Implement, test, commit.`
 export function buildSwarmSpecs(plan: RalphPlan, wave: number, config: RalphConfig, worktreePaths: Map<string, string>): SwarmAgentSpec[] {
   const waveDef = plan.waves.find(w => w.wave === wave)
   if (!waveDef) return []
-  return waveDef.taskIds.map(taskId => {
-    const task = plan.tasks.find(t => t.id === taskId)!
-    const modelRef = task.role === 'frontend' ? config.frontend : config.worker
-    return {
-      taskId,
-      prompt: buildWorkerPrompt(task, plan),
-      provider: modelRef.provider,
-      model: modelRef.model,
-      worktreePath: worktreePaths.get(taskId)!,
-      ownedPaths: task.ownedPaths,
-      description: `ralph-${task.role}: ${task.title}`,
-    }
-  })
+  return waveDef.taskIds
+    .map(taskId => {
+      const task = plan.tasks.find(t => t.id === taskId)
+      if (!task) return null // skip unknown task IDs (should be caught by validatePlan)
+      const wt = worktreePaths.get(taskId)
+      if (!wt) return null // skip tasks without worktree allocation
+      const modelRef = task.role === 'frontend' ? config.frontend : config.worker
+      return {
+        taskId,
+        prompt: buildWorkerPrompt(task, plan),
+        provider: modelRef.provider,
+        model: modelRef.model,
+        worktreePath: wt,
+        ownedPaths: task.ownedPaths,
+        description: `ralph-${task.role}: ${task.title}`,
+      }
+    })
+    .filter((spec): spec is SwarmAgentSpec => spec !== null)
 }
 
 export function formatWaveResults(wave: number, results: Map<string, { gates: GateResult[]; status: string }>): string {

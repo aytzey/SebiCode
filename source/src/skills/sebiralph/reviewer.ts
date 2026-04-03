@@ -26,7 +26,7 @@ FIX_INSTRUCTIONS:
 }
 
 export function parseReviewVerdict(response: string): { approved: boolean; issues: string[]; fixInstructions: string[] } {
-  const approved = response.includes('VERDICT: APPROVED')
+  const approved = /VERDICT:\s*APPROVED/i.test(response)
   const issues: string[] = []
   const fixInstructions: string[] = []
   if (!approved) {

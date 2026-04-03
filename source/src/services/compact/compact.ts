@@ -1222,7 +1222,7 @@ async function streamCompactSummary({
                   ? (result.totalUsage.cache_read_input_tokens ?? 0) /
                     ((result.totalUsage.cache_read_input_tokens ?? 0) +
                       (result.totalUsage.cache_creation_input_tokens ?? 0) +
-                      result.totalUsage.input_tokens)
+                      (result.totalUsage.input_tokens ?? 0))
                   : 0,
             })
           }

@@ -179,6 +179,7 @@ const enabledBundleFeatures = new Set([
   'BASH_CLASSIFIER',
   'TRANSCRIPT_CLASSIFIER',
   'CHICAGO_MCP',
+  'BRIDGE_MODE',
 ]);
 
 main();

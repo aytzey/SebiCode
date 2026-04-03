@@ -19,7 +19,8 @@
  *   CODEX_HOME              — override config dir (default: ~/.codex)
  */
 
-import { readFileSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getSessionId } from '../../bootstrap/state.js'
@@ -50,6 +51,7 @@ interface CodexAuthData {
 
 let cachedAuth: CodexAuthData | null = null
 let lastAuthReadMs = 0
+let refreshPromise: Promise<CodexAuthData> | null = null
 
 function getCodexHome(): string {
   return process.env.CODEX_HOME || join(homedir(), '.codex')
@@ -60,15 +62,29 @@ function loadAuth(): CodexAuthData {
   // Re-read from disk at most every 30s (another process may have refreshed)
   if (cachedAuth && now - lastAuthReadMs < 30_000) return cachedAuth
   const authPath = join(getCodexHome(), 'auth.json')
-  const raw = readFileSync(authPath, 'utf-8')
-  cachedAuth = JSON.parse(raw) as CodexAuthData
+  let raw: string
+  try {
+    raw = readFileSync(authPath, 'utf-8')
+  } catch {
+    throw new Error(
+      `No Codex auth found at ${authPath}. Run \`codex\` first to authenticate, or set CODEX_HOME to the correct directory.`,
+    )
+  }
+  try {
+    cachedAuth = JSON.parse(raw) as CodexAuthData
+  } catch {
+    throw new Error(`Codex auth file at ${authPath} contains invalid JSON. Delete it and re-authenticate with \`codex\`.`)
+  }
   lastAuthReadMs = now
   return cachedAuth
 }
 
 function saveAuth(auth: CodexAuthData): void {
   const authPath = join(getCodexHome(), 'auth.json')
-  writeFileSync(authPath, JSON.stringify(auth, null, 2) + '\n', 'utf-8')
+  // Atomic write: write to temp file then rename to avoid corruption from concurrent processes
+  const tmpPath = `${authPath}.${process.pid}.tmp`
+  writeFileSync(tmpPath, JSON.stringify(auth, null, 2) + '\n', 'utf-8')
+  renameSync(tmpPath, authPath)
   cachedAuth = auth
   lastAuthReadMs = Date.now()
 }
@@ -96,6 +112,14 @@ async function ensureFreshToken(): Promise<CodexAuthData> {
   const now = Math.floor(Date.now() / 1000)
   if (exp && exp - now > REFRESH_MARGIN_S) return auth
 
+  // Deduplicate concurrent refresh attempts (rotating refresh tokens
+  // can be invalidated if used twice)
+  if (refreshPromise) return refreshPromise
+  refreshPromise = doRefresh(auth).finally(() => { refreshPromise = null })
+  return refreshPromise
+}
+
+async function doRefresh(auth: CodexAuthData): Promise<CodexAuthData> {
   // Token expired or about to — refresh
   const resp = await fetch(AUTH_TOKEN_URL, {
     method: 'POST',
@@ -353,7 +377,7 @@ function resolveEffort(params: Record<string, unknown>): string {
 // ---------------------------------------------------------------------------
 
 function genId(prefix = 'msg'): string {
-  return `${prefix}_${Math.random().toString(36).slice(2, 15)}`
+  return `${prefix}_${randomUUID().replace(/-/g, '').slice(0, 15)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -376,6 +400,7 @@ class ResponsesStreamToAnthropicStream {
   private responseId = ''
   private anthropicBlockIndex = 0
   private currentTextBlockOpen = false
+  // toolCallBlocks tracks in-flight function_call items by output_index for correlation
   private toolCallBlocks: Map<number, { callId: string; name: string }> = new Map()
   private totalOutputTokens = 0
   private inputTokens = 0
@@ -384,14 +409,22 @@ class ResponsesStreamToAnthropicStream {
   private done = false
 
   // claude.ts checks for this property to distinguish stream from error objects
-  readonly controller = {} as AbortController
+  readonly controller: AbortController
 
   constructor(
-    private response: Response,
+    response: Response,
     model: string,
   ) {
-    this.reader = response.body!.getReader()
+    if (!response.body) {
+      throw new Error('Codex API response has no body (streaming not supported?)')
+    }
+    this.reader = response.body.getReader()
     this.model = model
+    // Wire up a real AbortController so callers can cancel the stream
+    this.controller = new AbortController()
+    this.controller.signal.addEventListener('abort', () => {
+      this.reader.cancel().catch(() => {})
+    })
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<AnyStreamEvent> {
@@ -441,12 +474,14 @@ class ResponsesStreamToAnthropicStream {
             this.done = true
             break
           }
+          let data: Record<string, unknown>
           try {
-            const data = JSON.parse(dataStr)
-            yield* this.processEvent(currentEvent, data)
+            data = JSON.parse(dataStr)
           } catch {
-            // skip malformed JSON
+            continue // skip malformed JSON
           }
+          // processEvent errors (e.g. response.failed) must propagate
+          yield* this.processEvent(currentEvent, data)
         }
       }
     }
@@ -479,9 +514,12 @@ class ResponsesStreamToAnthropicStream {
   private *processEvent(event: string, data: Record<string, unknown>): Generator<AnyStreamEvent> {
     switch (event) {
       case 'response.created':
-      case 'response.in_progress':
-        if (data.id) this.responseId = data.id as string
+      case 'response.in_progress': {
+        // Some endpoints nest the response object under data.response
+        const resp = (data.response as Record<string, unknown>) || data
+        if (resp.id) this.responseId = resp.id as string
         break
+      }
 
       case 'response.output_item.added': {
         const item = data.item as Record<string, unknown>
@@ -577,16 +615,18 @@ class ResponsesStreamToAnthropicStream {
         break
 
       case 'response.completed': {
-        const status = data.status as string
+        // Handle both flat format (data.status) and nested format (data.response.status)
+        const resp = (data.response as Record<string, unknown>) || data
+        const status = resp.status as string
         if (status === 'completed') {
           // Check if there were tool calls → stop_reason = tool_use
-          const output = data.output as Array<Record<string, unknown>> | undefined
+          const output = resp.output as Array<Record<string, unknown>> | undefined
           if (output?.some(o => o.type === 'function_call')) {
             this.finishReason = 'tool_use'
           }
         }
         // Extract usage — map cached tokens to Anthropic's cache_read_input_tokens
-        const usage = data.usage as Record<string, unknown> | undefined
+        const usage = (resp.usage as Record<string, unknown>) || (data.usage as Record<string, unknown>)
         if (usage) {
           this.inputTokens = (usage.input_tokens as number) || 0
           this.totalOutputTokens = (usage.output_tokens as number) || 0
@@ -600,8 +640,25 @@ class ResponsesStreamToAnthropicStream {
         break
       }
 
+      case 'response.incomplete': {
+        // Response was truncated (e.g. max_output_tokens reached)
+        // Treat like a normal completion — let the caller handle the truncated output
+        const resp = (data.response as Record<string, unknown>) || data
+        const usage = (resp.usage as Record<string, unknown>) || (data.usage as Record<string, unknown>)
+        if (usage) {
+          this.inputTokens = (usage.input_tokens as number) || 0
+          this.totalOutputTokens = (usage.output_tokens as number) || 0
+          const details = usage.input_tokens_details as Record<string, number> | undefined
+          if (details?.cached_tokens) this.cachedInputTokens = details.cached_tokens
+        }
+        this.finishReason = 'max_tokens'
+        this.done = true
+        break
+      }
+
       case 'response.failed': {
-        const error = data.error as Record<string, string> | undefined
+        const resp = (data.response as Record<string, unknown>) || data
+        const error = (resp.error as Record<string, string>) || (data.error as Record<string, string>)
         const errMsg = error?.message || 'Unknown error from Responses API'
         throw new Error(`Codex API error: ${errMsg}`)
       }
@@ -621,6 +678,72 @@ class ResponsesStreamToAnthropicStream {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: consume a Responses stream into a complete Anthropic BetaMessage shape
+// ---------------------------------------------------------------------------
+
+async function consumeStreamToMessage(stream: ResponsesStreamToAnthropicStream, model: string): Promise<Record<string, unknown>> {
+  const contentBlocks: unknown[] = []
+  let stopReason = 'end_turn'
+  let usage: Record<string, unknown> = { input_tokens: 0, output_tokens: 0 }
+  let messageId = genId('msg')
+
+  for await (const event of stream) {
+    switch (event.type) {
+      case 'message_start': {
+        const msg = event.message as Record<string, unknown>
+        if (msg.id) messageId = msg.id as string
+        break
+      }
+      case 'content_block_start': {
+        const block = event.content_block as Record<string, unknown>
+        if (block.type === 'text') {
+          contentBlocks.push({ type: 'text', text: '' })
+        } else if (block.type === 'tool_use') {
+          contentBlocks.push({ type: 'tool_use', id: block.id, name: block.name, input: {} })
+        }
+        break
+      }
+      case 'content_block_delta': {
+        const delta = event.delta as Record<string, unknown>
+        const current = contentBlocks[event.index] as Record<string, unknown> | undefined
+        if (!current) break
+        if (delta.type === 'text_delta') {
+          current.text = (current.text as string) + (delta.text as string)
+        } else if (delta.type === 'input_json_delta') {
+          current._rawJson = ((current._rawJson as string) || '') + (delta.partial_json as string)
+        }
+        break
+      }
+      case 'content_block_stop': {
+        const current = contentBlocks[event.index] as Record<string, unknown> | undefined
+        if (current?.type === 'tool_use' && current._rawJson) {
+          try { current.input = JSON.parse(current._rawJson as string) } catch { /* keep empty input */ }
+          delete current._rawJson
+        }
+        break
+      }
+      case 'message_delta': {
+        const delta = event.delta as Record<string, unknown>
+        if (delta.stop_reason) stopReason = delta.stop_reason as string
+        if (event.usage) usage = event.usage as Record<string, unknown>
+        break
+      }
+    }
+  }
+
+  return {
+    id: messageId,
+    type: 'message',
+    role: 'assistant',
+    content: contentBlocks,
+    model,
+    stop_reason: stopReason,
+    stop_sequence: null,
+    usage,
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main adapter class — duck-types as Anthropic SDK client
 // ---------------------------------------------------------------------------
 
@@ -632,7 +755,7 @@ export class OpenAIAdapter {
       create: (
         params: Record<string, unknown>,
         options?: Record<string, unknown>,
-      ) => {
+      ) => Promise<Record<string, unknown>> & {
         withResponse: () => Promise<{
           data: ResponsesStreamToAnthropicStream
           request_id: string
@@ -646,24 +769,52 @@ export class OpenAIAdapter {
     timeout?: number
     [key: string]: unknown
   }) {
-    this.timeout = config.timeout || 600_000
+    this.timeout = config.timeout ?? 600_000
 
     const self = this
     this.beta = {
       messages: {
         create(params: Record<string, unknown>, options?: Record<string, unknown>) {
-          return {
-            async withResponse() {
-              const response = await self.makeRequest(params, options)
-              const model = process.env.CODEX_MODEL || (params.model as string) || DEFAULT_MODEL
-              const stream = new ResponsesStreamToAnthropicStream(response, model)
-              return {
-                data: stream,
-                request_id: response.headers.get('x-request-id') || genId('req'),
-                response,
-              }
-            },
+          const model = process.env.CODEX_MODEL || (params.model as string) || DEFAULT_MODEL
+
+          // Lazy: don't fire the API request until someone actually awaits or calls .withResponse().
+          // This prevents double-requests when callers chain .withResponse().
+          let consumed = false
+
+          // Base promise (for direct `await create()` callers like sideQuery)
+          const messagePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+            // Defer execution to microtask so .withResponse() has a chance to pre-empt
+            queueMicrotask(() => {
+              if (consumed) return // .withResponse() was called first, skip
+              consumed = true
+              self.makeRequest(params, options)
+                .then(async (response) => {
+                  const stream = new ResponsesStreamToAnthropicStream(response, model)
+                  return consumeStreamToMessage(stream, model)
+                })
+                .then(resolve, reject)
+            })
+          })
+
+          // Attach .withResponse() for streaming callers (used by claude.ts queryModel)
+          const thenable = messagePromise as Promise<Record<string, unknown>> & {
+            withResponse: () => Promise<{
+              data: ResponsesStreamToAnthropicStream
+              request_id: string
+              response: Response
+            }>
           }
+          thenable.withResponse = async () => {
+            consumed = true // prevent the lazy base promise from firing
+            const response = await self.makeRequest(params, options)
+            const stream = new ResponsesStreamToAnthropicStream(response, model)
+            return {
+              data: stream,
+              request_id: response.headers.get('x-request-id') || genId('req'),
+              response,
+            }
+          }
+          return thenable
         },
       },
     }
@@ -717,6 +868,9 @@ export class OpenAIAdapter {
       body.reasoning = { effort, summary: 'auto' }
     }
 
+    // NOTE: max_output_tokens is NOT sent — the Codex chatgpt.com endpoint
+    // rejects it with 400. The model uses its own default output limit.
+
     // Tools — keep in stable order for cache prefix matching
     if (tools && tools.length > 0) {
       body.tools = tools
@@ -751,7 +905,7 @@ export class OpenAIAdapter {
     const signal = (options?.signal as AbortSignal) || undefined
     const controller = new AbortController()
     if (signal) {
-      signal.addEventListener('abort', () => controller.abort())
+      signal.addEventListener('abort', () => controller.abort(), { once: true })
     }
 
     const timeoutId = setTimeout(() => controller.abort(), this.timeout)
@@ -786,21 +940,66 @@ export class OpenAIAdapter {
           error.error = { type: 'api_error', message: errorBody }
         }
 
+        // Retry strategy aligned with Codex CLI (codex-rs):
+        //   - 5xx: retry with exponential backoff (server errors are transient)
+        //   - 429: retry once after retry-after delay
+        //   - 404: NOT retried (Codex doesn't retry 404 either)
+        // Max 4 attempts, base delay 200ms, exponential backoff with jitter
+        const isRetryable = status >= 500 || status === 429
+        if (isRetryable) {
+          const MAX_RETRIES = 3 // + original attempt = 4 total (matches Codex default)
+          for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+            // Exponential backoff with jitter: 200ms * 2^attempt * jitter(0.9-1.1)
+            const baseMs = status === 429
+              ? parseInt(response.headers.get('retry-after') || '2', 10) * 1000
+              : 200
+            const expMs = baseMs * Math.pow(2, attempt)
+            const jitter = 0.9 + Math.random() * 0.2
+            const waitMs = Math.min(expMs * jitter, 30_000)
+            await new Promise(resolve => setTimeout(resolve, waitMs))
+            const retryController = new AbortController()
+            const retryTimeout = setTimeout(() => retryController.abort(), this.timeout)
+            try {
+              const retryResponse = await fetch(`${baseURL}/responses`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body),
+                signal: retryController.signal,
+              })
+              clearTimeout(retryTimeout)
+              if (retryResponse.ok) return retryResponse
+              // If still a server error, continue retrying
+              if (retryResponse.status < 500 && retryResponse.status !== 429) break
+            } catch {
+              clearTimeout(retryTimeout)
+              // Network/transport error — continue retrying (matches Codex retry_transport)
+            }
+          }
+        }
+
         // If 401 and we have refresh token, try one more time after force-refresh
         if (status === 401 && auth.tokens?.refresh_token) {
-          clearTimeout(timeoutId)
           cachedAuth = null  // force re-read
           lastAuthReadMs = 0
           const freshAuth = await ensureFreshToken()
           if (freshAuth.tokens) {
             headers['Authorization'] = `Bearer ${freshAuth.tokens.access_token}`
-            const retryResponse = await fetch(`${baseURL}/responses`, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify(body),
-              signal: controller.signal,
-            })
-            if (retryResponse.ok) return retryResponse
+            // Use a fresh AbortController — the original may already be aborted
+            const retryController = new AbortController()
+            const retryTimeout = setTimeout(() => retryController.abort(), this.timeout)
+            try {
+              const retryResponse = await fetch(`${baseURL}/responses`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(body),
+                signal: retryController.signal,
+              })
+              clearTimeout(retryTimeout)
+              if (retryResponse.ok) return retryResponse
+            } catch {
+              clearTimeout(retryTimeout)
+              // fall through to throw original error
+            }
           }
         }
 

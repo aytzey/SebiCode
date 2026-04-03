@@ -55,5 +55,5 @@ export type GateResult = {
 export type ReviewResult = {
   approved: boolean
   issues: string[]
-  fixInstructions?: string
+  fixInstructions: string[]
 }

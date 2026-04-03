@@ -2,6 +2,17 @@
 
 Modified Claude Code 2.1.88 with dual-provider support (Anthropic + OpenAI/Codex) and `/sebiralph` dual-model orchestration skill.
 
+## Provider Switch (works in remote control too)
+
+When the user types `/provider codex` or `/provider claude`, switch the provider by running:
+```bash
+echo "codex" > ~/.claude/.sebi-provider    # switch to Codex/OpenAI (gpt-5.4)
+echo "firstParty" > ~/.claude/.sebi-provider  # switch to Claude/Anthropic
+```
+Then confirm: "Switched to [provider]. Next message will use the new model."
+
+To check current provider: `cat ~/.claude/.sebi-provider 2>/dev/null || echo "firstParty"`
+
 ## What This Is
 
 A source-built Claude Code that can run on **both** Anthropic Claude AND OpenAI Codex models simultaneously. Built from the official CLI's source map with three layers of modifications:

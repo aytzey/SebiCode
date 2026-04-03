@@ -11,7 +11,24 @@
  */
 
 import { randomUUID } from 'crypto'
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
+
+/** Extract plain text from an SDK user message (string or content blocks). */
+function extractUserText(msg: SDKMessage): string | undefined {
+  if (!('message' in msg) || !msg.message) return undefined
+  const m = msg.message as Record<string, unknown>
+  if (typeof m.content === 'string') return m.content.trim()
+  if (Array.isArray(m.content)) {
+    const texts = (m.content as Array<Record<string, unknown>>)
+      .filter(b => b.type === 'text' && typeof b.text === 'string')
+      .map(b => (b.text as string).trim())
+    return texts.join(' ').trim() || undefined
+  }
+  return undefined
+}
 import type {
   SDKControlRequest,
   SDKControlResponse,
@@ -190,6 +207,47 @@ export function handleIngressMessage(
 
     if (parsed.type === 'user') {
       if (uuid) recentInboundUUIDs.add(uuid)
+
+      // Intercept /provider command before forwarding to the model.
+      // In remote control, slash commands bypass the REPL command handler,
+      // so we handle /provider here at the bridge message layer.
+      const userText = extractUserText(parsed)
+      if (userText) {
+        const providerFile = join(homedir(), '.claude', '.sebi-provider')
+        const providerMatch = userText.match(/^\/provider\s+(codex|claude|anthropic|openai|gpt)\s*$/i)
+        if (providerMatch) {
+          const target = providerMatch[1]!.toLowerCase()
+          const isCodex = target === 'codex' || target === 'openai' || target === 'gpt'
+          const newProvider = isCodex ? 'codex' : 'firstParty'
+          try {
+            writeFileSync(providerFile, newProvider, 'utf-8')
+            // Also set env var for the current process
+            if (isCodex) {
+              process.env.CLAUDE_CODE_USE_CODEX = '1'
+            } else {
+              delete process.env.CLAUDE_CODE_USE_CODEX
+            }
+            logForDebugging(`[bridge:provider] Switched to ${newProvider}`)
+          } catch (e) {
+            logForDebugging(`[bridge:provider] Failed to write: ${e}`)
+          }
+          // Rewrite the message so the model confirms the switch
+          if ('message' in parsed && parsed.message && typeof parsed.message === 'object') {
+            const msg = parsed.message as Record<string, unknown>
+            msg.content = `[System: Provider switched to ${isCodex ? 'Codex (gpt-5.4)' : 'Claude (Opus 4.6)'}. Confirm this to the user briefly.]`
+          }
+        }
+        const providerCheck = userText.match(/^\/provider\s*$/i)
+        if (providerCheck) {
+          let current = 'firstParty'
+          try { current = require('fs').readFileSync(providerFile, 'utf-8').trim() || 'firstParty' } catch { /* default */ }
+          if ('message' in parsed && parsed.message && typeof parsed.message === 'object') {
+            const msg = parsed.message as Record<string, unknown>
+            msg.content = `[System: Current provider is ${current === 'codex' ? 'Codex (OpenAI/gpt-5.4)' : 'Claude (Anthropic/Opus 4.6)'}. Tell the user. They can switch with /provider codex or /provider claude.]`
+          }
+        }
+      }
+
       logEvent('tengu_bridge_message_received', {
         is_repl: true,
       })

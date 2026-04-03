@@ -899,6 +899,19 @@ export function getAssistantMessageFromError(
     })
   }
 
+  // Codex 5xx server errors — already retried by the adapter, surface cleanly
+  if (
+    getAPIProvider() === 'codex' &&
+    error instanceof Error &&
+    'status' in error &&
+    (error as { status: number }).status >= 500
+  ) {
+    return createAssistantAPIErrorMessage({
+      content: `Codex API server error (${(error as { status: number }).status}) after retries: ${error.message}`,
+      error: 'api_error',
+    })
+  }
+
   // 404 Not Found — usually means the selected model doesn't exist or isn't
   // available. Guide the user to /model so they can pick a valid one.
   // For 3P users, suggest a specific fallback model they can try.

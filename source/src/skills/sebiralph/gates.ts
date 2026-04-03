@@ -1,4 +1,6 @@
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import type { GateResult } from './types.js'
 
 function run(cmd: string, cwd: string): { ok: boolean; output: string } {
@@ -12,10 +14,16 @@ function run(cmd: string, cwd: string): { ok: boolean; output: string } {
 }
 
 export function runPathOwnershipGate(cwd: string, ownedPaths: string[]): GateResult {
-  const { ok, output } = run('git diff --name-only HEAD', cwd)
-  if (!ok) return { passed: false, gate: 'path-ownership', output: `git diff failed: ${output}` }
+  let output: string
+  try {
+    output = execFileSync('git', ['diff', '--name-only', 'HEAD'], { cwd, encoding: 'utf-8', timeout: 30_000 }).trim()
+  } catch {
+    return { passed: false, gate: 'path-ownership', output: 'git diff failed' }
+  }
   const changedFiles = output.split('\n').filter(Boolean)
-  const violations = changedFiles.filter(f => !ownedPaths.some(p => f.startsWith(p)))
+  const violations = changedFiles.filter(f =>
+    !ownedPaths.some(p => f === p || f.startsWith(p.endsWith('/') ? p : p + '/'))
+  )
   if (violations.length > 0) {
     return { passed: false, gate: 'path-ownership', output: `Modified files outside owned paths:\n${violations.join('\n')}` }
   }
@@ -28,8 +36,7 @@ export function runBuildGate(cwd: string): GateResult {
     { test: 'tsconfig.json', cmd: 'npx tsc --noEmit' },
   ]
   for (const { test, cmd } of cmds) {
-    const { ok: exists } = run(`test -f ${test} && echo yes`, cwd)
-    if (exists) {
+    if (existsSync(join(cwd, test))) {
       const result = run(cmd, cwd)
       return { passed: result.ok, gate: 'build', output: result.output.slice(0, 2000) }
     }
@@ -43,8 +50,7 @@ export function runLintGate(cwd: string): GateResult {
     { test: 'pyproject.toml', cmd: 'ruff check .' },
   ]
   for (const { test, cmd } of cmds) {
-    const { ok: exists } = run(`test -f ${test} && echo yes`, cwd)
-    if (exists) {
+    if (existsSync(join(cwd, test))) {
       const result = run(cmd, cwd)
       return { passed: result.ok, gate: 'lint', output: result.output.slice(0, 2000) }
     }
@@ -58,8 +64,7 @@ export function runTestGate(cwd: string): GateResult {
     { test: 'pytest.ini', cmd: 'pytest' },
   ]
   for (const { test, cmd } of cmds) {
-    const { ok: exists } = run(`test -f ${test} && echo yes`, cwd)
-    if (exists) {
+    if (existsSync(join(cwd, test))) {
       const result = run(cmd, cwd)
       return { passed: result.ok, gate: 'test', output: result.output.slice(0, 2000) }
     }

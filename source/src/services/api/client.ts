@@ -319,6 +319,16 @@ export async function getAnthropicClient({
   const hasOAuth = !!(oauthTokens?.accessToken)
   const useOAuth = isClaudeAISubscriber() || (forceAnthropic && hasOAuth)
 
+  // Pre-flight: if forceAnthropic is set but no credentials are available,
+  // fail early with a clear message instead of letting the request fail with
+  // a cryptic auth error from the Anthropic API.
+  if (forceAnthropic && !hasOAuth && !apiKey && !getAnthropicApiKey()) {
+    throw new Error(
+      'Cannot spawn Anthropic subagent: no Claude credentials available. ' +
+      'Authenticate with Claude first (run `claude` to log in) or set ANTHROPIC_API_KEY.',
+    )
+  }
+
   // OAuth requires the oauth beta header in the request. When forceAnthropic
   // is set, the normal beta injection in claude.ts may not fire (session-level
   // subscriber check is false). Add it as a default header so every request

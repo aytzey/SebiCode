@@ -6,7 +6,11 @@ function isEnabled(): boolean {
   if (!feature('BRIDGE_MODE')) {
     return false
   }
-  return isBridgeEnabled()
+  // Always register the command when BRIDGE_MODE is built.
+  // Auth checks happen at invocation time (bridge.tsx), not registration.
+  // isBridgeEnabled() requires auth/config which aren't ready at Commander
+  // setup time, causing the command to silently disappear.
+  return true
 }
 
 const bridge = {

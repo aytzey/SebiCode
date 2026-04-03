@@ -449,7 +449,7 @@ export function initExtractMemories(): void {
             ).toFixed(1)
           : '0.0'
       logForDebugging(
-        `[extractMemories] finished — ${writtenPaths.length} files written, cache: read=${result.totalUsage.cache_read_input_tokens} create=${result.totalUsage.cache_creation_input_tokens} input=${result.totalUsage.input_tokens} (${hitPct}% hit)`,
+        `[extractMemories] finished — ${writtenPaths.length} files written, cache: read=${result.totalUsage.cache_read_input_tokens ?? 0} create=${result.totalUsage.cache_creation_input_tokens ?? 0} input=${result.totalUsage.input_tokens ?? 0} (${hitPct}% hit)`,
       )
 
       if (writtenPaths.length > 0) {

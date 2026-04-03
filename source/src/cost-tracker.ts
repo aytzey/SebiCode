@@ -295,7 +295,7 @@ export function addToTotalSessionCost(
     ...attrs,
     type: 'cacheRead',
   })
-  getTokenCounter()?.add(usage.cache_creation_input_tokens ?? 0, {
+  getTokenCounter()?.add(usage?.cache_creation_input_tokens ?? 0, {
     ...attrs,
     type: 'cacheCreation',
   })

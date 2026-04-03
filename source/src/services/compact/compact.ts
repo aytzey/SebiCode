@@ -1214,14 +1214,14 @@ async function streamCompactSummary({
             logEvent('tengu_compact_cache_sharing_success', {
               preCompactTokenCount,
               outputTokens: result.totalUsage.output_tokens,
-              cacheReadInputTokens: result.totalUsage.cache_read_input_tokens,
+              cacheReadInputTokens: result.totalUsage.cache_read_input_tokens ?? 0,
               cacheCreationInputTokens:
-                result.totalUsage.cache_creation_input_tokens,
+                result.totalUsage.cache_creation_input_tokens ?? 0,
               cacheHitRate:
-                result.totalUsage.cache_read_input_tokens > 0
-                  ? result.totalUsage.cache_read_input_tokens /
-                    (result.totalUsage.cache_read_input_tokens +
-                      result.totalUsage.cache_creation_input_tokens +
+                (result.totalUsage.cache_read_input_tokens ?? 0) > 0
+                  ? (result.totalUsage.cache_read_input_tokens ?? 0) /
+                    ((result.totalUsage.cache_read_input_tokens ?? 0) +
+                      (result.totalUsage.cache_creation_input_tokens ?? 0) +
                       result.totalUsage.input_tokens)
                   : 0,
             })

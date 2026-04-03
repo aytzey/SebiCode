@@ -247,11 +247,11 @@ ${sessionIds.map(id => `- ${id}`).join('\n')}`
         })
       }
       logForDebugging(
-        `[autoDream] completed — cache: read=${result.totalUsage.cache_read_input_tokens} created=${result.totalUsage.cache_creation_input_tokens}`,
+        `[autoDream] completed — cache: read=${result.totalUsage.cache_read_input_tokens ?? 0} created=${result.totalUsage.cache_creation_input_tokens ?? 0}`,
       )
       logEvent('tengu_auto_dream_completed', {
-        cache_read: result.totalUsage.cache_read_input_tokens,
-        cache_created: result.totalUsage.cache_creation_input_tokens,
+        cache_read: result.totalUsage.cache_read_input_tokens ?? 0,
+        cache_created: result.totalUsage.cache_creation_input_tokens ?? 0,
         output: result.totalUsage.output_tokens,
         sessions_reviewed: sessionIds.length,
       })

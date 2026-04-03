@@ -22,6 +22,7 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { getSessionId } from '../../bootstrap/state.js'
 
 // ---------------------------------------------------------------------------
 // Codex Auth — reads ~/.codex/auth.json, handles token refresh
@@ -378,6 +379,7 @@ class ResponsesStreamToAnthropicStream {
   private toolCallBlocks: Map<number, { callId: string; name: string }> = new Map()
   private totalOutputTokens = 0
   private inputTokens = 0
+  private cachedInputTokens = 0
   private finishReason = 'end_turn'
   private done = false
 
@@ -451,14 +453,18 @@ class ResponsesStreamToAnthropicStream {
       this.currentTextBlockOpen = false
     }
 
-    // Emit message_delta + message_stop
+    // Emit message_delta + message_stop (include cached token stats)
     yield {
       type: 'message_delta',
       delta: {
         stop_reason: this.finishReason,
         stop_sequence: null,
       },
-      usage: { output_tokens: this.totalOutputTokens },
+      usage: {
+        output_tokens: this.totalOutputTokens,
+        // Map OpenAI cached tokens → Anthropic cache_read_input_tokens for UI display
+        ...(this.cachedInputTokens > 0 && { cache_read_input_tokens: this.cachedInputTokens }),
+      },
     }
 
     yield { type: 'message_stop' }
@@ -573,11 +579,16 @@ class ResponsesStreamToAnthropicStream {
             this.finishReason = 'tool_use'
           }
         }
-        // Extract usage
-        const usage = data.usage as Record<string, number> | undefined
+        // Extract usage — map cached tokens to Anthropic's cache_read_input_tokens
+        const usage = data.usage as Record<string, unknown> | undefined
         if (usage) {
-          this.inputTokens = usage.input_tokens || 0
-          this.totalOutputTokens = usage.output_tokens || 0
+          this.inputTokens = (usage.input_tokens as number) || 0
+          this.totalOutputTokens = (usage.output_tokens as number) || 0
+          // OpenAI reports cached tokens in prompt_tokens_details.cached_tokens
+          const details = usage.input_tokens_details as Record<string, number> | undefined
+          if (details?.cached_tokens) {
+            this.cachedInputTokens = details.cached_tokens
+          }
         }
         this.done = true
         break
@@ -670,11 +681,23 @@ export class OpenAIAdapter {
     const input = translateMessages(params.messages as AnthropicMessage[])
     const tools = translateTools(params.tools as AnthropicTool[] | undefined)
 
+    // Session ID for prompt cache routing — ensures all turns in the same
+    // conversation hit the same cache server (90% discount on cached tokens)
+    let cacheKey: string | undefined
+    try {
+      cacheKey = getSessionId()
+    } catch {
+      // bootstrap state may not be ready yet
+    }
+
     const body: Record<string, unknown> = {
       model,
       input,
       stream: true,
       store: false,
+      // Prompt cache: route by session ID so repeated prefixes cache-hit
+      // (automatic 90% discount on cached input tokens)
+      ...(cacheKey && { prompt_cache_key: cacheKey }),
     }
 
     if (instructions) {
@@ -687,13 +710,10 @@ export class OpenAIAdapter {
       summary: 'concise',
     }
 
-    // Tools
+    // Tools — keep in stable order for cache prefix matching
     if (tools && tools.length > 0) {
       body.tools = tools
     }
-
-    // Note: max_output_tokens and temperature are not supported by the
-    // chatgpt.com/backend-api/codex endpoint — omitted intentionally
 
     // Build headers
     const headers: Record<string, string> = {

@@ -630,7 +630,8 @@ function runBunBuild() {
     bunArgs.push('--minify');
   }
 
-  return spawnSync('bun', bunArgs, {
+  const bunExecutable = resolveBunExecutable();
+  const result = spawnSync(bunExecutable, bunArgs, {
     cwd: workspaceRoot,
     encoding: 'utf8',
     env: {
@@ -640,6 +641,51 @@ function runBunBuild() {
     },
     maxBuffer: 256 * 1024 * 1024,
   });
+
+  const stdout = normalizeSpawnText(result.stdout);
+  let stderr = normalizeSpawnText(result.stderr);
+  if (result.error && !stderr.trim()) {
+    stderr = `${formatSpawnError(result.error, bunExecutable)}\n`;
+  }
+
+  return {
+    ...result,
+    stdout,
+    stderr,
+  };
+}
+
+function resolveBunExecutable() {
+  const candidates = [
+    process.env.BUN,
+    process.env.BUN_INSTALL ? path.join(process.env.BUN_INSTALL, 'bin', 'bun') : null,
+    process.env.HOME ? path.join(process.env.HOME, '.bun', 'bin', 'bun') : null,
+  ].filter(Boolean);
+
+  for (const candidate of candidates) {
+    if (isFile(candidate)) {
+      return candidate;
+    }
+  }
+
+  return 'bun';
+}
+
+function normalizeSpawnText(output) {
+  if (typeof output === 'string') {
+    return output;
+  }
+  if (output == null) {
+    return '';
+  }
+  return output.toString('utf8');
+}
+
+function formatSpawnError(error, attemptedCommand = 'bun') {
+  if (error?.code === 'ENOENT' && [error.path, attemptedCommand].some(value => typeof value === 'string' && value.endsWith('bun'))) {
+    return 'error: bun was not found on PATH. Install Bun or export PATH="$HOME/.bun/bin:$PATH" before running this build.';
+  }
+  return `error: ${error?.message ?? 'failed to start bun build process'}`;
 }
 
 function finalizeBuild() {
@@ -734,7 +780,7 @@ function finalizeBuild() {
 }
 
 
-function reconcileBuildErrors(stderrText) {
+function reconcileBuildErrors(stderrText = '') {
   let changed = false;
 
   for (const match of stderrText.matchAll(

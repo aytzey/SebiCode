@@ -115,7 +115,7 @@ export function getInitialAdvisorSetting(): string | undefined {
 export function getAdvisorUsage(
   usage: BetaUsage,
 ): Array<BetaUsage & { model: string }> {
-  const iterations = usage.iterations as
+  const iterations = usage?.iterations as
     | Array<{ type: string }>
     | null
     | undefined

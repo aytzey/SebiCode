@@ -154,7 +154,7 @@ import {
   modelSupportsAdvisor,
 } from 'src/utils/advisor.js'
 import { getAgentContext } from 'src/utils/agentContext.js'
-import { isClaudeAISubscriber } from 'src/utils/auth.js'
+import { isClaudeAISubscriber, getClaudeAIOAuthTokens } from 'src/utils/auth.js'
 import {
   getToolSearchBetaHeader,
   modelSupportsStructuredOutputs,
@@ -1076,6 +1076,15 @@ async function* queryModel(
     options.querySource === 'hook_agent' ||
     options.querySource === 'verification_agent'
   const betas = getMergedBetas(options.model, { isAgenticQuery })
+
+  // Cross-provider: when providerOverride forces Anthropic, ensure OAuth beta
+  // is included even if the session-level subscriber check is false
+  if (options.providerOverride === 'anthropic' && !betas.includes('oauth-2025-04-20')) {
+    const tokens = getClaudeAIOAuthTokens()
+    if (tokens?.accessToken) {
+      betas.push('oauth-2025-04-20')
+    }
+  }
 
   // Always send the advisor beta header when advisor is enabled, so
   // non-agentic queries (compact, side_question, extract_memories, etc.)

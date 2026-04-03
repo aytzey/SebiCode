@@ -1,111 +1,111 @@
-import type { RalphConfig } from './types.js'
-import { formatConfigSummary, formatConfigPickerPrompt } from './config.js'
-
-const MAX_PLAN_ITERATIONS = 3
-const MAX_FIX_RETRIES = 2
+import type { RalphConfig, RalphRole, ModelRef } from './types.js'
+import { formatConfigSummary } from './config.js'
+import { PLAN_JSON_SCHEMA_PROMPT } from './prd.js'
+import { HARD_GATES } from './planner.js'
 
 export function buildOrchestratorPrompt(userTask: string, config: RalphConfig): string {
-  return `# /sebiralph Orchestrator
+  // Build provider/model info per role for agent dispatch
+  const agentInfo = (role: RalphRole): string => {
+    const ref = config[role]
+    return `provider: "${ref.provider}" (${ref.model})`
+  }
 
-You are the orchestrator for a dual-model implementation pipeline. You coordinate Claude and Codex agents to plan, implement, and review code.
+  return `You are the /sebiralph orchestrator. You coordinate multiple AI agents (Claude + Codex) to implement the user's task.
 
-## User's Task
+## Task
 ${userTask}
 
-## Configuration
-${formatConfigSummary(config)}
+## Roles
+- Planner: ${agentInfo('planner')}
+- Evaluator: ${agentInfo('evaluator')}
+- Worker: ${agentInfo('worker')}
+- Frontend: ${agentInfo('frontend')}
+- Reviewer: ${agentInfo('reviewer')}
 
-## Your Workflow
+## Execute this workflow step by step:
 
-### Phase 0: Codebase Context
-First, use Glob and Read tools to understand the project structure. Gather:
-- Main language/framework
-- Directory structure
-- Key files (package.json, tsconfig, etc.)
-- Existing patterns
+### Step 1: Explore Codebase
+Use Glob and Read to understand the project. Note: language, framework, directory structure, key files.
 
-Store this context — you'll give it to the planner.
+### Step 2: Plan
+Spawn a Planner agent:
+\`\`\`
+Agent tool call:
+  description: "Plan implementation"
+  prompt: [user task + codebase context + JSON schema instructions]
+  provider: "${config.planner.provider}"
+\`\`\`
+The planner must output a JSON plan with tasks, waves, ownedPaths, dependsOn, acceptanceChecks.
 
-### Phase 1: Planning Loop (max ${MAX_PLAN_ITERATIONS} iterations)
+${PLAN_JSON_SCHEMA_PROMPT}
 
-1. **Spawn Planner agent** using Agent tool:
-   - provider: "${config.planner.provider}"
-   - prompt: Include user task + codebase context + instructions to output JSON plan
-   - The planner must output a structured JSON plan with tasks, waves, ownedPaths, dependsOn, acceptanceChecks
+### Step 3: Evaluate Plan
+Spawn an Evaluator agent with the plan JSON:
+\`\`\`
+Agent tool call:
+  description: "Evaluate plan"
+  prompt: [plan JSON + hard gates]
+  provider: "${config.evaluator.provider}"
+\`\`\`
+Hard gates: ${HARD_GATES.join('; ')}
 
-2. **Parse the plan JSON** from the planner's response
+If REJECTED: revise plan (max 3 iterations). If APPROVED: continue.
 
-3. **Spawn Evaluator agent** using Agent tool:
-   - provider: "${config.evaluator.provider}"
-   - prompt: Include the JSON plan + hard gates checklist
-   - Hard gates:
-     * Every task has ownedPaths
-     * Dependencies are acyclic
-     * Acceptance criteria are testable
-     * Shared contracts have wave-0 owner
-     * Max 2 unresolved assumptions
-     * Waves respect dependency order
+### Step 4: Show PRD to User
+Render the plan as a markdown table showing tasks, waves, ownership, criteria.
+Ask: "Approve this plan? [Y/n]"
+STOP and wait for user approval.
 
-4. **If REJECTED**: spawn Planner again with evaluator's feedback (max ${MAX_PLAN_ITERATIONS} iterations)
-   - If same critique repeats 2x, show user and ask for guidance
-5. **If APPROVED**: proceed to Phase 2
+### Step 5: Implement (Parallel Swarm)
+For each wave (0, 1, 2...):
 
-### Phase 2: PRD Approval
+a) Create integration branch: \`git checkout -b ralph/integration\`
 
-1. Render the approved plan as a readable markdown table showing all tasks, waves, file ownership, dependencies, and acceptance criteria
-2. Ask the user: "Approve this plan? [Y/n/edit]"
-3. Wait for user approval before proceeding
+b) For each task in the wave, spawn a worker agent:
+\`\`\`
+Agent tool call:
+  description: "Implement [task title]"
+  prompt: [task description + owned paths + acceptance criteria]
+  provider: "[worker or frontend provider]"
+  isolation: "worktree"
+  run_in_background: true
+\`\`\`
+- Worker tasks → provider: "${config.worker.provider}"
+- Frontend tasks → provider: "${config.frontend.provider}"
 
-### Phase 3: Swarm Implementation
+c) Wait for all agents in wave to complete.
 
-For each wave (starting from wave 0):
+d) Run gates per worktree (use Bash):
+- \`git diff --name-only HEAD\` — check only owned paths modified
+- Run build/test if available
 
-1. **Create integration branch** if not exists:
-   \`git checkout -b ralph/integration-<session>\`
+e) If gates fail: send fix instructions to worker (max 2 retries)
 
-2. **For each task in the wave**, spawn a worker agent:
-   - Use Agent tool with:
-     - provider: task's assigned provider ("${config.worker.provider}" for workers, "${config.frontend.provider}" for frontend)
-     - isolation: "worktree"
-     - run_in_background: true (for parallel execution within wave)
-   - Prompt: task description + owned paths + acceptance criteria + constraints
-   - CRITICAL: include the provider field so the agent uses the right API
+### Step 6: Review & Merge
+For each task that passed gates:
 
-3. **Wait for all agents in the wave to complete**
+a) Get diff: \`git diff main...HEAD\` in worktree
 
-4. **Run deterministic gates** on each worktree using Bash:
-   - \`cd <worktree> && git diff --name-only HEAD\` — verify only owned paths modified
-   - Run build/lint/test commands if available
+b) Spawn Reviewer agent:
+\`\`\`
+Agent tool call:
+  description: "Review [task title]"
+  prompt: [diff + acceptance criteria]
+  provider: "${config.reviewer.provider}"
+\`\`\`
 
-5. **If gates fail**: send fix instructions back to the worker (max ${MAX_FIX_RETRIES} retries)
+c) If NEEDS_FIX: worker fixes → re-gate → re-review (max 2 cycles)
+d) If APPROVED: merge to integration branch
 
-### Phase 4: Review & Merge
+### Step 7: Summary
+Show: tasks completed, files changed, integration branch name.
 
-For each completed task (gates passed):
-
-1. **Get the diff**: \`cd <worktree> && git diff main...HEAD\`
-2. **Spawn Reviewer agent**:
-   - provider: "${config.reviewer.provider}"
-   - prompt: diff + acceptance criteria
-3. **If NEEDS_FIX**: send fix instructions to original worker, re-gate, re-review (max ${MAX_FIX_RETRIES} cycles)
-4. **If APPROVED**: merge worktree to integration branch
-5. **After all tasks in wave merged**: run integration test
-6. **Proceed to next wave**
-
-### Phase 5: Summary
-
-After all waves complete:
-1. Show summary of tasks completed, failed, files changed
-2. The integration branch has all changes ready
-
-## Important Rules
-- ALWAYS use the \`provider\` field when spawning agents
-- Worker agents get \`isolation: "worktree"\` for parallel execution
-- NEVER let workers modify files outside their ownedPaths
-- Run deterministic gates BEFORE review
-- If anything fails after max retries, escalate to the user — don't loop forever
-- When spawning agents with provider "openai", they will use Codex/gpt-5.4
-- When spawning agents with provider "anthropic", they will use Claude`
+## CRITICAL RULES
+- ALWAYS include \`provider\` field when spawning agents — this routes to the correct AI model
+- Workers get \`isolation: "worktree"\` for parallel execution
+- Never let workers modify files outside their ownedPaths
+- If anything fails after retries, show the error to the user — don't loop forever
+- Start with Step 1 NOW.`
 }
 
-export { formatConfigPickerPrompt }
+export { formatConfigSummary }

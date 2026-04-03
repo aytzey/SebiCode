@@ -140,13 +140,15 @@ export async function getAnthropicClient({
       timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
     }) as unknown as Anthropic
   }
-  // If providerOverride === 'anthropic', fall through to normal Anthropic path
+  // If providerOverride === 'anthropic', force Anthropic auth path even if
+  // session-level is Codex. This enables cross-provider subagent spawning.
+  const forceAnthropic = providerOverride === 'anthropic'
 
   logForDebugging('[API:auth] OAuth token check starting')
   await checkAndRefreshOAuthTokenIfNeeded()
   logForDebugging('[API:auth] OAuth token check complete')
 
-  if (!isClaudeAISubscriber()) {
+  if (!isClaudeAISubscriber() && !forceAnthropic) {
     await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
   }
 
@@ -164,7 +166,7 @@ export async function getAnthropicClient({
       fetch: resolvedFetch,
     }),
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
+  if (!forceAnthropic && isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
     const { AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk')
     // Use region override for small fast model if specified
     const awsRegion =
@@ -202,7 +204,7 @@ export async function getAnthropicClient({
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicBedrock(bedrockArgs) as unknown as Anthropic
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
+  if (!forceAnthropic && isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
     const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
     // Determine Azure AD token provider based on configuration
     // SDK reads ANTHROPIC_FOUNDRY_API_KEY by default
@@ -232,7 +234,7 @@ export async function getAnthropicClient({
     // we have always been lying about the return type - this doesn't support batching or models
     return new AnthropicFoundry(foundryArgs) as unknown as Anthropic
   }
-  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) {
+  if (!forceAnthropic && isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) {
     // Refresh GCP credentials if gcpAuthRefresh is configured and credentials are expired
     // This is similar to how we handle AWS credential refresh for Bedrock
     if (!isEnvTruthy(process.env.CLAUDE_CODE_SKIP_VERTEX_AUTH)) {
@@ -312,11 +314,22 @@ export async function getAnthropicClient({
   }
 
   // Determine authentication method based on available tokens
+  // When forceAnthropic is set (cross-provider subagent), use OAuth if available
+  const oauthTokens = getClaudeAIOAuthTokens()
+  const hasOAuth = !!(oauthTokens?.accessToken)
+  const useOAuth = isClaudeAISubscriber() || (forceAnthropic && hasOAuth)
+
+  // OAuth requires the oauth beta header in the request. When forceAnthropic
+  // is set, the normal beta injection in claude.ts may not fire (session-level
+  // subscriber check is false). Add it as a default header so every request
+  // from this client includes it.
+  if (forceAnthropic && hasOAuth) {
+    defaultHeaders['anthropic-beta'] = 'oauth-2025-04-20'
+  }
+
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
-    apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
-    authToken: isClaudeAISubscriber()
-      ? getClaudeAIOAuthTokens()?.accessToken
-      : undefined,
+    apiKey: useOAuth ? null : apiKey || getAnthropicApiKey(),
+    authToken: useOAuth ? oauthTokens!.accessToken : undefined,
     // Set baseURL from OAuth config when using staging OAuth
     ...(process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.USE_STAGING_OAUTH)

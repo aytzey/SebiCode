@@ -681,6 +681,46 @@ function finalizeBuild() {
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
   fs.writeFileSync(tempOutputPath, wrapperSource, 'utf8');
   copyRuntimeVendorAssets(tempBundlePath);
+
+  // Post-build: patch SDK MessageStream to guard event.usage in message_delta
+  // The Anthropic SDK crashes when event.usage is undefined (cross-provider subagents)
+  const sdkBundlePath = path.join(tempBundlePath, 'src', 'entrypoints', 'cli.js');
+  if (fs.existsSync(sdkBundlePath)) {
+    let code = fs.readFileSync(sdkBundlePath, 'utf8');
+    // Guard: snapshot.usage.output_tokens = event.usage.output_tokens;
+    code = code.replace(
+      /snapshot\.usage\.output_tokens = event\.usage\.output_tokens;/g,
+      'if (event.usage) { snapshot.usage.output_tokens = event.usage.output_tokens; }',
+    );
+    // Guard: if (event.usage.input_tokens != null)
+    code = code.replace(
+      /if \(event\.usage\.input_tokens != null\)/g,
+      'if (event.usage && event.usage.input_tokens != null)',
+    );
+    // Guard: if (event.usage.cache_creation_input_tokens != null)
+    code = code.replace(
+      /if \(event\.usage\.cache_creation_input_tokens != null\)/g,
+      'if (event.usage && event.usage.cache_creation_input_tokens != null)',
+    );
+    // Guard: if (event.usage.cache_read_input_tokens != null)
+    code = code.replace(
+      /if \(event\.usage\.cache_read_input_tokens != null\)/g,
+      'if (event.usage && event.usage.cache_read_input_tokens != null)',
+    );
+    // Guard: if (event.usage.server_tool_use != null)
+    code = code.replace(
+      /if \(event\.usage\.server_tool_use != null\)/g,
+      'if (event.usage && event.usage.server_tool_use != null)',
+    );
+    // Also guard all remaining .cache_creation_input_tokens accesses
+    // that might crash on undefined parent objects
+    code = code.replace(
+      /if \(event\.usage\.iterations != null\)/g,
+      'if (event.usage && event.usage.iterations != null)',
+    );
+    fs.writeFileSync(sdkBundlePath, code, 'utf8');
+  }
+
   removePath(bundlePath);
   fs.renameSync(tempBundlePath, bundlePath);
   fs.chmodSync(tempOutputPath, 0o755);

@@ -284,7 +284,7 @@ export function addToTotalSessionCost(
   addToTotalCostState(cost, modelUsage, model)
 
   const attrs =
-    isFastModeEnabled() && usage.speed === 'fast'
+    isFastModeEnabled() && usage?.speed === 'fast'
       ? { model, speed: 'fast' }
       : { model }
 

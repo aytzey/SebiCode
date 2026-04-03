@@ -149,7 +149,7 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
   if (
     shortName === firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)
   ) {
-    const isFastMode = usage.speed === 'fast'
+    const isFastMode = usage?.speed === 'fast'
     return getOpus46CostTier(isFastMode)
   }
 

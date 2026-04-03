@@ -1077,12 +1077,14 @@ async function* queryModel(
     options.querySource === 'verification_agent'
   const betas = getMergedBetas(options.model, { isAgenticQuery })
 
-  // Cross-provider: when providerOverride forces Anthropic, ensure OAuth beta
-  // is included even if the session-level subscriber check is false
-  if (options.providerOverride === 'anthropic' && !betas.includes('oauth-2025-04-20')) {
+  // Cross-provider: when providerOverride forces Anthropic, inject all
+  // required beta headers so the API responds in the expected format
+  if (options.providerOverride === 'anthropic') {
     const tokens = getClaudeAIOAuthTokens()
     if (tokens?.accessToken) {
-      betas.push('oauth-2025-04-20')
+      for (const header of ['oauth-2025-04-20', 'claude-code-20250219']) {
+        if (!betas.includes(header)) betas.push(header)
+      }
     }
   }
 
@@ -2397,11 +2399,11 @@ async function* queryModel(
       }
 
       // Check if the cache actually broke based on response tokens
-      if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+      if (feature('PROMPT_CACHE_BREAK_DETECTION') && usage) {
         void checkResponseForCacheBreak(
           options.querySource,
-          usage.cache_read_input_tokens,
-          usage.cache_creation_input_tokens,
+          usage.cache_read_input_tokens ?? 0,
+          usage.cache_creation_input_tokens ?? 0,
           messages,
           options.agentId,
           streamRequestId,

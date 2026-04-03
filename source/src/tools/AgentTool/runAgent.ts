@@ -341,12 +341,28 @@ export async function* runAgent({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
-  const resolvedAgentModel = getAgentModel(
+  let resolvedAgentModel = getAgentModel(
     agentDefinition.model,
     toolUseContext.options.mainLoopModel,
     model,
     permissionMode,
   )
+
+  // Cross-provider model mapping: when providerOverride switches providers,
+  // map the model to the target provider's equivalent to avoid sending
+  // e.g. 'gpt-5.4' to Anthropic API or 'claude-opus-4-6' to OpenAI.
+  if (providerOverride) {
+    const isOpenAIModel = resolvedAgentModel.startsWith('gpt-') || resolvedAgentModel.startsWith('o3') || resolvedAgentModel.startsWith('o4')
+    const isAnthropicModel = resolvedAgentModel.startsWith('claude-')
+
+    if (providerOverride === 'anthropic' && isOpenAIModel) {
+      // Map OpenAI → Anthropic default
+      resolvedAgentModel = 'claude-sonnet-4-6'
+    } else if (providerOverride === 'openai' && isAnthropicModel) {
+      // Map Anthropic → OpenAI default
+      resolvedAgentModel = process.env.CODEX_MODEL || 'gpt-5.4'
+    }
+  }
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
 

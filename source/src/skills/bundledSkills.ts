@@ -26,6 +26,7 @@ export type BundledSkillDefinition = {
   hooks?: HooksSettings
   context?: 'inline' | 'fork'
   agent?: string
+  effort?: import('../utils/effort.js').EffortValue
   /**
    * Additional reference files to extract to disk on first invocation.
    * Keys are relative paths (forward slashes, no `..`), values are content.
@@ -82,6 +83,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     argumentHint: definition.argumentHint,
     whenToUse: definition.whenToUse,
     model: definition.model,
+    effort: definition.effort,
     disableModelInvocation: definition.disableModelInvocation ?? false,
     userInvocable: definition.userInvocable ?? true,
     contentLength: 0, // Not applicable for bundled skills

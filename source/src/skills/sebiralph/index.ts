@@ -10,6 +10,7 @@ export function registerSebiRalphSkill(): void {
     aliases: ['ralph'],
     whenToUse: 'When the user wants to orchestrate a complex implementation using both Claude and Codex models collaboratively',
     userInvocable: true,
+    effort: 'high',
     argumentHint: '<task description>',
 
     async getPromptForCommand(args: string) {

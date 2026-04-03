@@ -331,6 +331,8 @@ export function getExtraBodyParams(betaHeaders?: string[]): JsonObject {
 }
 
 export function getPromptCachingEnabled(model: string): boolean {
+  // Codex/OpenAI: no prompt caching support
+  if (getAPIProvider() === 'codex') return false
   // Global disable takes precedence
   if (isEnvTruthy(process.env.DISABLE_PROMPT_CACHING)) return false
 

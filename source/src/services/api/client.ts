@@ -128,6 +128,18 @@ export async function getAnthropicClient({
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
+  // Codex/OpenAI: skip Anthropic auth entirely and return early
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_CODEX)) {
+    const { OpenAIAdapter } = await import('./openai-adapter.js')
+    return new OpenAIAdapter({
+      apiKey: process.env.OPENAI_API_KEY || null,
+      defaultHeaders,
+      maxRetries,
+      timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+      dangerouslyAllowBrowser: true,
+    }) as unknown as Anthropic
+  }
+
   logForDebugging('[API:auth] OAuth token check starting')
   await checkAndRefreshOAuthTokenIfNeeded()
   logForDebugging('[API:auth] OAuth token check complete')

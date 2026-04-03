@@ -712,11 +712,15 @@ function finalizeBuild() {
       /if \(event\.usage\.server_tool_use != null\)/g,
       'if (event.usage && event.usage.server_tool_use != null)',
     );
-    // Also guard all remaining .cache_creation_input_tokens accesses
-    // that might crash on undefined parent objects
+    // Guard remaining SDK event.usage accesses
     code = code.replace(
       /if \(event\.usage\.iterations != null\)/g,
       'if (event.usage && event.usage.iterations != null)',
+    );
+    // Guard snapshot.container access in message_delta (may be undefined)
+    code = code.replace(
+      /snapshot\.container = event\.delta\.container;/g,
+      'snapshot.container = event.delta?.container;',
     );
     fs.writeFileSync(sdkBundlePath, code, 'utf8');
   }

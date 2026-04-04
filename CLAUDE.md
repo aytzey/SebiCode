@@ -1,6 +1,6 @@
 # CLAUDE.md — sebi-code
 
-Modified Claude Code 2.1.88 with dual-provider support (Anthropic + OpenAI/Codex) and `/sebiralph` dual-model orchestration skill.
+Modified Claude Code 2.1.88 with dual-provider support (Anthropic + OpenAI/Codex) and a stateful `/sebiralph` coding harness.
 
 ## Provider Switch (works in remote control too)
 
@@ -19,7 +19,7 @@ A source-built Claude Code that can run on **both** Anthropic Claude AND OpenAI 
 
 1. **Cache fixes** (from cc-cache-fix) — db8 attachment filter, fingerprint meta skip, 1h cache TTL
 2. **Codex provider** — Full OpenAI Responses API adapter using Codex OAuth tokens
-3. **`/sebiralph` skill** — Dual-model orchestration: Claude plans + reviews, Codex implements
+3. **`/sebiralph` harness** — Built-in command with durable run state: Claude plans + reviews, Codex implements
 
 ## Quick Start
 
@@ -128,7 +128,7 @@ Available Codex models (from `~/.codex/models_cache.json`):
 | Thinking blocks | Disabled (gpt-5.4 uses `reasoning_effort` internally) |
 | Off-switch | `claude.ts`: tengu-off-switch bypassed for codex |
 
-## `/sebiralph` — Dual-Model Orchestration
+## `/sebiralph` — Durable Coding Harness
 
 ### Usage
 
@@ -140,12 +140,21 @@ sebi-claude
 # In Codex mode (orchestrator = Codex gpt-5.4)
 sebi
 > /sebiralph Add authentication with JWT tokens
+
+# Resume the current or last incomplete harness run
+> /sebiralph
+
+# Resume a specific run by id prefix
+> /sebiralph resume 2f4d9d7a
 ```
 
 ### Architecture
 
 ```
-/sebiralph "task description"
+/sebiralph "task description" (built-in local-jsx command)
+  │
+  ├─ Run state persisted in ~/.claude/projects/<project>/sebiralph-runs/
+  │   phase/status/sessionId/task/config/workflow/deploy summary
   │
   ├─ Phase 1: Planning (sequential)
   │   Planner (Claude Opus) → JSON plan
@@ -162,10 +171,12 @@ sebi
   │   Frontend: Claude Sonnet (provider: anthropic)
   │   Deterministic gates: path ownership, build, lint, test
   │
-  └─ Phase 4: Review & Merge
+  └─ Phase 4: Review, Merge, Deploy & Verify
       Claude Opus reviews each diff
       Fix loop → re-gate → re-review
       Merge to integration branch
+      Deploy integrated branch
+      Runtime verification loop until gaps are closed
 ```
 
 ### Default Roles
@@ -184,6 +195,11 @@ sebi
 type ModelRef = { provider: 'anthropic' | 'openai'; model: string }
 type RalphRole = 'planner' | 'evaluator' | 'worker' | 'frontend' | 'reviewer'
 type RalphConfig = Record<RalphRole, ModelRef>
+type RalphWorkflowDefaults = {
+  tdd: boolean; deployVerification: boolean;
+  maxPlanIterations: number; maxGateFixAttempts: number;
+  maxReviewFixCycles: number; maxDeployFixCycles: number;
+}
 type PRDTask = {
   id: string; title: string; description: string;
   role: 'worker' | 'frontend'; modelRef: ModelRef;
@@ -193,20 +209,31 @@ type PRDTask = {
 }
 ```
 
-### Modules (`source/src/skills/sebiralph/`)
+### Modules
+
+`source/src/commands/sebiralph/`
 
 | File | Purpose |
 |------|---------|
-| `types.ts` | ModelRef, RalphConfig, PRDTask, RalphPlan |
-| `config.ts` | Default config, model picker, available models |
-| `orchestrator.ts` | Main orchestration prompt (7-step workflow) |
+| `index.ts` | Built-in `/sebiralph` command registration |
+| `sebiralph.tsx` | Run start/resume/status flow |
+| `state.ts` | Project-scoped durable run persistence + transcript hydration |
+| `types.ts` | `SebiRalphRunState`, phase, deploy, task, and policy types |
+
+`source/src/skills/sebiralph/`
+
+| File | Purpose |
+|------|---------|
+| `types.ts` | ModelRef, RalphConfig, workflow defaults, PRDTask, RalphPlan |
+| `config.ts` | Default config, model picker, workflow summary |
+| `orchestrator.ts` | Main orchestration prompt with progress markers and deploy-verify loop |
 | `planner.ts` | Planner/evaluator prompts, hard gates, revision loop |
-| `prd.ts` | PRD JSON schema, markdown renderer, plan validator |
-| `swarm.ts` | Worker prompt builder, wave spec generator |
-| `reviewer.ts` | Review prompt, verdict parser, fix instructions |
+| `prd.ts` | PRD JSON schema, markdown renderer, TDD-aware plan validator |
+| `swarm.ts` | Worker prompt builder with TDD instructions |
+| `reviewer.ts` | Review prompt, verdict parser, regression-aware fix instructions |
 | `gates.ts` | Deterministic gates: path ownership, build, lint, test |
 | `integration.ts` | Git integration branch + worktree management |
-| `index.ts` | Bundled skill registration |
+| `index.ts` | Internal hidden prompt template registration |
 
 ## Modified Files (from base Claude Code 2.1.88)
 

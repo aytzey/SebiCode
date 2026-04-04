@@ -6,7 +6,7 @@
  * tool calls at each phase with exact templates provided.
  *
  * Modules used:
- *  - config.ts   → role-model display
+ *  - config.ts   → role-model display, workflow defaults display
  *  - planner.ts  → planner/evaluator prompt templates, hard gates
  *  - prd.ts      → JSON schema, plan validation criteria, markdown render
  *  - swarm.ts    → worker prompt template
@@ -15,27 +15,38 @@
  *  - integration.ts → git worktree/branch commands
  */
 
-import type { RalphConfig, RalphRole } from './types.js'
-import { formatConfigSummary } from './config.js'
+import type {
+  RalphConfig,
+  RalphRuntimeContext,
+  RalphWorkflowDefaults,
+} from './types.js'
+import { formatConfigSummary, formatWorkflowSummary } from './config.js'
 import { PLAN_JSON_SCHEMA_PROMPT } from './prd.js'
 import { HARD_GATES } from './planner.js'
 
-// ---------------------------------------------------------------------------
-// Phase builders — each returns a section of the harness prompt
-// ---------------------------------------------------------------------------
-
-function phaseConfig(config: RalphConfig): string {
+function phaseConfig(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   return `
 ## PHASE 0 — Config Review  ✦ HARD STOP
 
 Current role assignments:
 ${formatConfigSummary(config)}
 
-Display this table to the user and ask:
-> "SebiRalph config above. Approve? Reply **yes** to proceed, or **role=N** to change (e.g. worker=4 frontend=2)."
+Execution defaults:
+${formatWorkflowSummary(workflow)}
+
+TDD default meaning:
+- Workers start with a failing regression/spec first, then implement the minimal fix, then refactor
+- The harness does NOT declare success while TDD is ON until the final integrated change is deployed and runtime-verified
+- If deploy/runtime verification exposes a gap, the harness re-enters a fix loop until the gap is closed or a real external blocker is proven
+
+Display the config and workflow defaults to the user and ask:
+> "SebiRalph config above. TDD is ON by default. Approve? Reply **yes** to proceed, **role=N** to change a model, or **tdd=off** to disable the default TDD workflow for this run."
 
 **DO NOT proceed to Phase 1 until the user explicitly approves.**
-If the user changes roles, display the updated table and ask again.
+If the user disables TDD, restate that deploy verification becomes optional for this run and ask for confirmation again.
 `
 }
 
@@ -44,33 +55,48 @@ function phaseExplore(): string {
 ## PHASE 1 — Codebase Exploration
 
 **Entry:** Config approved.
-**Goal:** Build a concise codebase context string for the Planner.
+**Goal:** Build two artifacts for the Planner:
+1. \`codebaseContext\`
+2. \`deliveryContext\`
 
 Use these tools:
-1. \`Glob("**/*.{ts,tsx,js,jsx,py,go,rs,java}")\` — file tree
-2. \`Read(package.json)\` or equivalent manifest — dependencies, scripts
-3. \`Read(tsconfig.json)\` / \`Read(pyproject.toml)\` — build config
-4. \`Read(CLAUDE.md)\` or \`Read(README.md)\` — project docs
-5. \`Grep("import|from|require")\` on 2-3 key files — dependency graph
+1. \`Glob("**/*.{ts,tsx,js,jsx,py,go,rs,java,yml,yaml,json,md}")\` — file tree
+2. \`Read(package.json)\`, \`Read(pyproject.toml)\`, \`Read(Makefile)\`, \`Read(docker-compose.yml)\` if present
+3. \`Read(tsconfig.json)\` / build config equivalents if present
+4. \`Read(CLAUDE.md)\`, \`Read(README.md)\`, deploy docs, runbooks, and CI workflow files
+5. \`Grep("deploy|release|preview|staging|production|smoke|health")\` on docs/manifests/workflows
+6. \`Grep("test|spec|vitest|jest|pytest|playwright|cypress")\` on package manifests and key directories
 
-Produce a summary (assign to variable \`codebaseContext\`):
+Produce \`codebaseContext\` with:
 - Language & framework
 - Directory structure (key dirs only)
-- Test setup (runner, config file, test dir)
-- Build system (bundler, compiler)
+- Test setup (runner, config file, test dirs, naming conventions)
+- Build system
 - Entry points
 
-**Exit:** You have a clear codebase summary. Move to Phase 2.
+Produce \`deliveryContext\` with:
+- \`deployCommand\`: exact command from docs/scripts if discoverable
+- \`verifyCommand\`: exact smoke/e2e/runtime command if discoverable
+- \`runtimeSurface\`: URL, CLI entrypoint, UI route, API endpoint, or other observable surface
+- \`rollbackHint\`: documented rollback/undeploy path, or "none documented"
+- \`sources\`: where the deploy/verify expectations came from
+
+If TDD is ON and you cannot derive a credible deploy/runtime verification path, set:
+\`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`
+and carry that forward. **Do not invent deploy commands.**
+
+**Exit:** \`codebaseContext\` and \`deliveryContext\` are ready. Move to Phase 2.
 `
 }
 
-function phasePlan(config: RalphConfig): string {
-  const ref = (role: RalphRole) => `${config[role].provider}/${config[role].model}`
-
+function phasePlan(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   return `
 ## PHASE 2 — Planning (Planner Subagent)
 
-**Entry:** codebaseContext ready from Phase 1.
+**Entry:** \`codebaseContext\` and \`deliveryContext\` ready from Phase 1.
 
 Spawn the Planner agent:
 
@@ -85,7 +111,7 @@ Agent({
 
 ### Planner Prompt Template
 
-Build the prompt by filling in {TASK}, {CODEBASE_CONTEXT}, and {CONFIG}:
+Build the prompt by filling in {TASK}, {CODEBASE_CONTEXT}, {DELIVERY_CONTEXT}, and {CONFIG}:
 
 \`\`\`
 You are the Planner. Create a detailed implementation plan.
@@ -96,16 +122,26 @@ You are the Planner. Create a detailed implementation plan.
 ## Codebase Context
 {CODEBASE_CONTEXT}
 
+## Delivery Context
+{DELIVERY_CONTEXT}
+
 ## Role Assignments
 ${formatConfigSummary(config)}
+
+## Workflow Defaults
+TDD: ${workflow.tdd ? 'ON' : 'OFF'}
+Deploy verification: ${workflow.deployVerification ? 'REQUIRED when TDD is ON' : 'OPTIONAL'}
 
 ## Instructions
 1. Break the work into discrete tasks with clear boundaries
 2. Assign role: "worker" (backend/infra) or "frontend" (UI)
 3. Identify shared contracts (types, API schema, DB) — these go in wave 0
 4. Assign waves respecting dependencies
-5. For each task define: ownedPaths (disjoint within wave), dependsOn, inputs, outputs, acceptanceChecks
-6. Set modelRef for each task: worker tasks → { provider: "${config.worker.provider}", model: "${config.worker.model}" }, frontend tasks → { provider: "${config.frontend.provider}", model: "${config.frontend.model}" }
+5. TDD is ${workflow.tdd ? 'ON by default' : 'OFF for this run'}. ${workflow.tdd ? 'Plan red-green-refactor work, not code-first work.' : 'Still keep verification explicit.'}
+6. For each task define: ownedPaths (disjoint within wave), dependsOn, inputs, outputs, acceptanceChecks
+7. Every task must include at least one explicit acceptance check that names the regression/spec/smoke coverage to add or update
+8. Final-wave tasks must include the deploy/runtime verification expectations from DELIVERY_CONTEXT when a deployable surface exists
+9. Set modelRef for each task: worker tasks → { provider: "${config.worker.provider}", model: "${config.worker.model}" }, frontend tasks → { provider: "${config.frontend.provider}", model: "${config.frontend.model}" }
 
 ## Output Format
 ${PLAN_JSON_SCHEMA_PROMPT}
@@ -120,8 +156,10 @@ After receiving the Planner's response, validate the JSON:
 2. Check: every task has non-empty \`ownedPaths\`
 3. Check: no circular dependencies (follow dependsOn chains)
 4. Check: acceptance criteria are non-empty for every task
-5. Check: shared contract tasks are in wave 0
-6. Check: within each wave, no two tasks share overlapping owned paths
+5. Check: every task has at least one explicit test/regression/smoke acceptance check
+6. Check: shared contract tasks are in wave 0
+7. Check: within each wave, no two tasks share overlapping owned paths
+8. Check: final-wave tasks mention deploy/runtime verification when DELIVERY_CONTEXT includes a deployable surface
 
 If validation fails, show errors and ask Planner to revise. Max 2 fix attempts.
 
@@ -129,7 +167,10 @@ If validation fails, show errors and ask Planner to revise. Max 2 fix attempts.
 `
 }
 
-function phaseEvaluate(config: RalphConfig): string {
+function phaseEvaluate(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   return `
 ## PHASE 3 — Evaluation (Evaluator Subagent)
 
@@ -156,6 +197,9 @@ You are the Evaluator. Review this plan against hard gates.
 ## Plan
 {PLAN_JSON}
 
+## Delivery Context
+{DELIVERY_CONTEXT}
+
 ## Hard Gates — ALL must pass
 ${HARD_GATES.map((g, i) => `${i + 1}. ${g}`).join('\n')}
 
@@ -175,21 +219,21 @@ Parse the response:
 
 \`\`\`
 Agent({
-  description: "ralph-planner: revise plan (iteration N/3)",
-  prompt: "You are the Planner. Evaluator rejected your plan (iteration N/3).\\n\\n## Previous Plan\\n{PLAN_JSON}\\n\\n## Feedback\\n{EVALUATOR_RESPONSE}\\n\\nRevise to address ALL feedback. Output ONLY the revised JSON plan.",
+  description: "ralph-planner: revise plan (iteration N/${workflow.maxPlanIterations})",
+  prompt: "You are the Planner. Evaluator rejected your plan (iteration N/${workflow.maxPlanIterations}).\\n\\n## Previous Plan\\n{PLAN_JSON}\\n\\n## Delivery Context\\n{DELIVERY_CONTEXT}\\n\\n## Feedback\\n{EVALUATOR_RESPONSE}\\n\\nRevise to address ALL feedback. Output ONLY the revised JSON plan.",
   provider: "${config.planner.provider}",
   model: "opus"
 })
 \`\`\`
 
-Re-evaluate with the revised plan. **Max 3 iterations.**
-If still rejected after 3 iterations → show the evaluator's feedback to the user and ask for guidance.
+Re-evaluate with the revised plan. **Max ${workflow.maxPlanIterations} iterations.**
+If still rejected after ${workflow.maxPlanIterations} iterations → show the evaluator's feedback to the user and ask for guidance.
 
 **Exit:** Plan approved by evaluator. Move to Phase 4.
 `
 }
 
-function phaseApprove(): string {
+function phaseApprove(workflow: RalphWorkflowDefaults): string {
   return `
 ## PHASE 4 — PRD Approval  ✦ HARD STOP
 
@@ -199,8 +243,15 @@ Render the plan as a markdown table. For each wave, show:
 
 | ID | Title | Role | Provider/Model | Owned Paths | Depends On | Acceptance Criteria |
 
+Then display a short delivery summary:
+- TDD: ${workflow.tdd ? 'ON by default' : 'OFF for this run'}
+- Deploy verification: ${workflow.deployVerification ? 'required when TDD is ON' : 'optional'}
+- Delivery context: deploy command / runtime surface / verification command / rollback hint
+
+If \`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`, stop and ask the user for the missing deploy/runtime verification path before implementation starts.
+
 Then ask the user:
-> "Implementation plan above. Approve? Reply **Y** to start implementation, **n** to reject, or **edit** with changes."
+> "Implementation plan above. TDD is ${workflow.tdd ? 'ON' : 'OFF'} for this run. Approve? Reply **Y** to start implementation, **n** to reject, or **edit** with changes."
 
 **DO NOT proceed to Phase 5 until the user explicitly approves.**
 If user requests edits, modify the plan and re-display.
@@ -209,7 +260,18 @@ If user requests edits, modify the plan and re-display.
 `
 }
 
-function phaseImplement(config: RalphConfig): string {
+function phaseImplement(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
+  const tddBlock = workflow.tdd
+    ? `## TDD Workflow
+1. Add or update the regression/spec that proves the task is incomplete
+2. Run that test first and observe the failure
+3. Implement the smallest change that makes the failing test pass
+4. Refactor only after the new/updated tests pass again`
+    : '## Verification Workflow\nKeep verification explicit in the worktree before committing.'
+
   return `
 ## PHASE 5 — Swarm Implementation (Multi-Provider Parallel)
 
@@ -250,27 +312,17 @@ Agent({
 
 ### Waiting for Background Agents — KEEP-ALIVE RULE
 
-**PROBLEM**: When background agents complete, notifications arrive as messages. If you respond with
-just text ("Waiting for tX...") and no tool call, the turn ends and queued notifications cannot be
-delivered. The user would have to type "continue" to unstick you.
-
-**RULE**: After receiving a background agent notification, ALWAYS make a tool call — never respond
-with text-only. This keeps the conversation flowing and allows queued notifications to be delivered.
-
-Pattern to follow:
+After receiving a background agent notification, ALWAYS make a tool call — never respond with text-only.
+Pattern:
 1. Receive task-notification → update your status tracking
 2. Check: are ALL agents in this wave done?
-   - **YES** → immediately proceed to Phase 6 (run gate commands)
-   - **NO** → run \`Bash("echo 'Waiting for N remaining agents...'")\` to keep the turn alive
+   - **YES** → immediately proceed to Phase 6
+   - **NO** → run \`Bash("echo 'Waiting for N remaining agents...'")\`
 3. After the Bash result, check if more notifications arrived. Repeat until all done.
-
-**NEVER** output "Waiting for X..." as your final response without a tool call.
 
 ### Provider Fallback
 
-If an Agent call with \`provider: "openai"\` fails (model not found, auth error), immediately
-retry with \`provider: "anthropic", model: "sonnet"\`. If the FIRST worker in a wave fails on openai,
-switch ALL remaining workers in that wave to anthropic — don't fail one-by-one.
+If an Agent call with \`provider: "openai"\` fails (model not found, auth error), immediately retry with \`provider: "anthropic", model: "sonnet"\`. If the FIRST worker in a wave fails on openai, switch ALL remaining workers in that wave to anthropic.
 Same applies in reverse: if anthropic fails, fall back to openai.
 
 ### Worker Prompt Template
@@ -293,6 +345,8 @@ You are a worker agent implementing a specific task.
 ## Acceptance Criteria
 {task.acceptanceChecks as numbered list}
 
+${tddBlock}
+
 Implement, test, commit.
 \`\`\`
 
@@ -309,7 +363,7 @@ Update after each agent completes. If an agent fails/crashes, mark as FAILED and
 `
 }
 
-function phaseGate(): string {
+function phaseGate(workflow: RalphWorkflowDefaults): string {
   return `
 ## PHASE 6 — Gate Validation (Per Worker)
 
@@ -337,29 +391,38 @@ cd {worktree_path} && test -f package.json && npm run lint --if-present || test 
 
 ### Gate 4: Test
 \`\`\`bash
-cd {worktree_path} && test -f package.json && npm test --if-present || test -f pytest.ini && pytest || echo "no test runner"
+cd {worktree_path} && npm test --if-present || test -f pytest.ini && pytest || echo "no test runner"
 \`\`\`
+
+### TDD Audit
+
+When TDD is ON:
+- Inspect the diff file list from Gate 1
+- If the task changes runtime behavior and no test/spec/regression file was added or updated, treat that as a gate failure unless the plan explicitly marked the task as docs-only or non-runtime work
 
 ### Gate Failure Handling
 
-If ANY gate fails:
+If ANY gate or the TDD audit fails:
 1. Spawn a fix agent in the SAME worktree:
 \`\`\`
 Agent({
   description: "ralph-fix: {task.title} gate failure",
-  prompt: "Gate '{gate_name}' failed for task '{task.title}'.\\n\\nError output:\\n{gate_output}\\n\\nOwned paths: {ownedPaths}\\n\\nFix the issue. Stay within owned paths. Commit the fix.",
+  prompt: "Gate '{gate_name}' failed for task '{task.title}'.\\n\\nError output:\\n{gate_output}\\n\\nOwned paths: {ownedPaths}\\n\\n${workflow.tdd ? 'Keep TDD on: add or preserve the failing regression first, then fix it.' : 'Fix the issue directly.'}\\nStay within owned paths. Commit the fix.",
   provider: "{same provider as original worker}",
   cwd: "{worktree_path}"
 })
 \`\`\`
-2. Re-run all 4 gates
-3. **Max 2 fix attempts.** After that, mark task as GATE_FAILED and report to user.
+2. Re-run all 4 gates and the TDD audit
+3. **Max ${workflow.maxGateFixAttempts} fix attempts.** After that, mark task as GATE_FAILED and report to user.
 
 **Exit:** All gates pass for all tasks in this wave. Move to Phase 7.
 `
 }
 
-function phaseReview(config: RalphConfig): string {
+function phaseReview(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   return `
 ## PHASE 7 — Review & Fix (Reviewer Subagent)
 
@@ -397,8 +460,8 @@ Review this diff for task "{task.title}" ({task.id}).
 {diff output}
 \\\`\\\`\\\`
 
-Focus on: logic, security, acceptance criteria.
-Do NOT flag: style, build errors, missing tests (unless in criteria).
+Focus on: logic, security, acceptance criteria, and regression coverage.
+${workflow.tdd ? 'TDD is ON. If behavior changed without corresponding regression/spec updates, that is a real issue.' : 'Do NOT flag missing tests unless the acceptance criteria require them.'}
 
 If good: VERDICT: APPROVED
 If issues:
@@ -417,22 +480,22 @@ FIX_INSTRUCTIONS:
 \`\`\`
 Agent({
   description: "ralph-fix: {task.title} review issues",
-  prompt: "Reviewer found issues with '{task.title}'.\\n\\n## Feedback\\n{reviewer_response}\\n\\n## Owned Paths: {ownedPaths}\\n\\nFix ONLY the identified issues. Stay within owned paths. Commit the fix.",
+  prompt: "Reviewer found issues with '{task.title}'.\\n\\n## Feedback\\n{reviewer_response}\\n\\n## Owned Paths: {ownedPaths}\\n\\n${workflow.tdd ? 'Preserve or add the regression that proves the issue, then fix it.' : 'Fix ONLY the identified issues.'}\\nStay within owned paths. Commit the fix.",
   provider: "{same provider as original worker}",
   cwd: "{worktree_path}"
 })
 \`\`\`
 
-Then re-run gates (Phase 6) and re-review. **Max 2 fix cycles.**
+Then re-run gates (Phase 6) and re-review. **Max ${workflow.maxReviewFixCycles} fix cycles.**
 After that, mark as NEEDS_MANUAL_REVIEW and continue.
 
 **Exit:** All tasks reviewed. Move to Phase 8.
 `
 }
 
-function phaseMerge(): string {
+function phaseMerge(workflow: RalphWorkflowDefaults): string {
   return `
-## PHASE 8 — Merge & Summary
+## PHASE 8 — Merge, Deploy & Verify
 
 **Entry:** All tasks reviewed and approved (or marked for manual review).
 
@@ -451,32 +514,105 @@ git checkout {original_branch}
 
 The task branch name is available from the Agent tool's worktree result.
 
-### Step 3: Cleanup
-For each worktree:
+### Step 3: Deploy the integrated branch
+
+When TDD is ON, deployment is REQUIRED unless the user explicitly disabled TDD.
+- Use \`deliveryContext.deployCommand\` from Phase 1
+- If \`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`, stop and ask the user instead of guessing
+- Record the deploy target, commit SHA, and any preview/staging URL returned by the deploy command
+
+### Step 4: Runtime verification of the deployed change
+
+Use the real runtime surface from \`deliveryContext.runtimeSurface\`.
+
+Prefer a verification subagent if the Agent tool exposes it:
+\`\`\`
+Agent({
+  description: "ralph-verifier: deployed integration branch",
+  subagent_type: "verification",
+  prompt: "Original task: {TASK}\\nIntegration branch: {integration_branch}\\nDeploy target: {deploy_target}\\nRuntime surface: {runtime_surface}\\nVerify the deployed change end-to-end and try to break it. Include at least one adversarial probe."
+})
+\`\`\`
+
+If the verification subagent is unavailable, perform equivalent runtime verification yourself.
+Minimum requirement:
+- Run the documented smoke/e2e/runtime command or hit the live surface directly
+- Capture the evidence
+- Run at least one adversarial probe
+
+### Step 5: Deploy fix loop
+
+If deploy OR runtime verification fails and TDD is ON:
+1. Create a fresh fix worktree from the integration branch
+2. Add or preserve the failing regression that proves the deploy/runtime gap
+3. Fix the issue in that worktree
+4. Re-run Phase 6 and Phase 7 on the fix
+5. Merge the fix back into the integration branch
+6. Re-deploy
+7. Re-run runtime verification
+
+Repeat until deploy verification passes or you hit **${workflow.maxDeployFixCycles} deploy fix cycles**.
+If still failing after ${workflow.maxDeployFixCycles} cycles, stop and report the blocker with the latest deploy/verification evidence.
+
+### Step 6: Cleanup
+
+After successful deployment verification (or after final escalation), clean up:
 \`\`\`bash
 git worktree remove {worktree_path} --force
 git branch -D ralph/task-{task.id}
 \`\`\`
 
-### Step 4: Final Report
+### Step 7: Final Report
 
 Output a summary table:
 
 | Task | Status | Files Changed | Branch |
 |------|--------|---------------|--------|
 
-And the final message:
-> "SebiRalph complete. Integration branch: \`ralph/integration-{id}\`. {N} tasks merged, {M} failed/manual."
+Then report:
+- Integration branch
+- Deploy target / URL
+- Runtime verification verdict
+- Number of deploy fix cycles used
+
+Final message:
+> "SebiRalph complete. Integration branch: \`ralph/integration-{id}\`. Deploy verification: {PASS|FAIL|BLOCKED}. {N} tasks merged, {M} failed/manual."
 
 If any tasks were GATE_FAILED or NEEDS_MANUAL_REVIEW, list them with details.
 `
 }
 
-// ---------------------------------------------------------------------------
-// Main export — assembles all phases into the harness prompt
-// ---------------------------------------------------------------------------
+function buildProgressProtocol(runtime?: RalphRuntimeContext): string {
+  if (!runtime) {
+    return ''
+  }
 
-export function buildHarnessPrompt(userTask: string, config: RalphConfig): string {
+  return `
+## Run Metadata
+- SebiRalph run id: ${runtime.runId}
+${runtime.sessionId ? `- Session id: ${runtime.sessionId}` : ''}
+
+## Progress Marker Protocol
+Emit a standalone progress marker whenever you enter a phase or reach a hard stop.
+Use this exact shape:
+- Entered phase: <sebiralph-progress run_id="${runtime.runId}" phase="{phase_id}" status="entered" />
+- Waiting for user: <sebiralph-progress run_id="${runtime.runId}" phase="{phase_id}" status="awaiting_user" />
+- Phase completed: <sebiralph-progress run_id="${runtime.runId}" phase="{phase_id}" status="completed" />
+- Final success: <sebiralph-progress run_id="${runtime.runId}" phase="completed" status="completed" />
+- Hard blocker: <sebiralph-progress run_id="${runtime.runId}" phase="blocked" status="blocked" />
+
+Allowed phase ids:
+config_review, explore, plan, evaluate, prd_approval, wave_execution, gate_validation, review_fix, integration_merge, deploy_verify, completed, blocked
+
+Keep the markers short and exact. They are used for harness durability and resume.`
+}
+
+export function buildHarnessPrompt(
+  userTask: string,
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+  runtime?: RalphRuntimeContext,
+): string {
   return `# /sebiralph — Multi-Provider Swarm Harness
 
 You are the SebiRalph orchestrator. Execute this task using a structured 8-phase workflow with multi-provider AI agents.
@@ -484,34 +620,38 @@ You are the SebiRalph orchestrator. Execute this task using a structured 8-phase
 ## Task
 ${userTask}
 
+${buildProgressProtocol(runtime)}
+
 ## Workflow Rules
 - Execute phases IN ORDER (0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8)
 - Phases 0 and 4 are HARD STOPS — wait for user approval
 - Always set the \`provider\` field on Agent calls — it routes to the correct AI model
 - Workers MUST use \`isolation: "worktree"\` for code isolation
 - Wave 1+ workers MUST use \`run_in_background: true\` for parallel execution
-- **KEEP-ALIVE**: When waiting for background agents, ALWAYS make a tool call (e.g. Bash echo) — NEVER end your turn with text-only while agents are pending. This prevents notification delivery stalls.
+- **TDD DEFAULT**: TDD is ON unless the user explicitly turns it off in Phase 0
+- **DONE MEANS DEPLOYED**: When TDD is ON, do not declare success until the integrated change is deployed and runtime-verified
+- **KEEP-ALIVE**: When waiting for background agents, ALWAYS make a tool call — NEVER end your turn with text-only while agents are pending
 - On unrecoverable failure, report to user — never loop forever
-- Track task status throughout: PENDING → IN_PROGRESS → GATES_PASS → APPROVED → MERGED
+- Track task status throughout: PENDING → IN_PROGRESS → GATES_PASS → APPROVED → MERGED → DEPLOY_VERIFIED
 
 ---
-${phaseConfig(config)}
+${phaseConfig(config, workflow)}
 ---
 ${phaseExplore()}
 ---
-${phasePlan(config)}
+${phasePlan(config, workflow)}
 ---
-${phaseEvaluate(config)}
+${phaseEvaluate(config, workflow)}
 ---
-${phaseApprove()}
+${phaseApprove(workflow)}
 ---
-${phaseImplement(config)}
+${phaseImplement(config, workflow)}
 ---
-${phaseGate()}
+${phaseGate(workflow)}
 ---
-${phaseReview(config)}
+${phaseReview(config, workflow)}
 ---
-${phaseMerge()}
+${phaseMerge(workflow)}
 ---
 
 ## Start Now
@@ -520,5 +660,4 @@ Begin with Phase 0 — display the config table and ask for approval.
 `
 }
 
-// Keep backward compat export name
 export const buildOrchestratorPrompt = buildHarnessPrompt

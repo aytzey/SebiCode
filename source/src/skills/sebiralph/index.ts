@@ -17,8 +17,7 @@
  */
 
 import { registerBundledSkill } from '../bundledSkills.js'
-import { DEFAULT_CONFIG } from './types.js'
-import { formatConfigSummary } from './config.js'
+import { DEFAULT_CONFIG, DEFAULT_WORKFLOW } from './types.js'
 import { buildHarnessPrompt } from './orchestrator.js'
 
 // These imports ensure the modules are bundled and their exports are reachable.
@@ -52,19 +51,21 @@ void cleanupIntegrationBranch
 
 export function registerSebiRalphSkill(): void {
   registerBundledSkill({
-    name: 'sebiralph',
-    description: 'Multi-provider swarm harness: Claude plans + reviews, Codex implements. 8-phase workflow with parallel wave execution in isolated worktrees.',
-    aliases: ['ralph'],
-    whenToUse: 'When the user wants to orchestrate a complex implementation using both Claude and Codex models collaboratively via /sebiralph <task>',
-    userInvocable: true,
+    name: 'sebiralph-template',
+    description: 'Internal SebiRalph harness prompt template used by the built-in /sebiralph command.',
+    whenToUse: 'Internal only. The built-in /sebiralph command manages runtime state and invokes this template.',
+    userInvocable: false,
+    disableModelInvocation: true,
+    isHidden: true,
     argumentHint: '<task description>',
     effort: 'max' as import('../../utils/effort.js').EffortValue,
 
     async getPromptForCommand(args: string) {
       const config = DEFAULT_CONFIG
+      const workflow = DEFAULT_WORKFLOW
 
       // Build the full harness prompt with all phases
-      const harnessPrompt = buildHarnessPrompt(args, config)
+      const harnessPrompt = buildHarnessPrompt(args, config, workflow)
 
       return [
         {

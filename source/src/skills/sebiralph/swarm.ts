@@ -10,7 +10,7 @@ export type SwarmAgentSpec = {
   description: string
 }
 
-export function buildWorkerPrompt(task: PRDTask, plan: RalphPlan): string {
+export function buildWorkerPrompt(task: PRDTask, plan: RalphPlan, tddEnabled = true): string {
   const deps = task.dependsOn
     .map(id => plan.tasks.find(t => t.id === id))
     .filter(Boolean)
@@ -32,7 +32,15 @@ ${task.description}
 ## Acceptance Criteria
 ${task.acceptanceChecks.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 
+${tddEnabled
+    ? `## Delivery Rules
+- TDD is ON. Start by adding or updating the failing regression/spec that proves this task is incomplete
+- Run the failing test first and observe it fail
+- Implement the smallest change that makes the new/updated test pass
+- Refactor only after the test suite is green again
+
 Implement, test, commit.`
+    : 'Implement, test, commit.'}`
 }
 
 export function buildSwarmSpecs(plan: RalphPlan, wave: number, config: RalphConfig, worktreePaths: Map<string, string>): SwarmAgentSpec[] {

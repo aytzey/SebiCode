@@ -15,6 +15,29 @@ export const DEFAULT_CONFIG: RalphConfig = {
   reviewer:  { provider: 'anthropic', model: 'claude-opus-4-6' },
 }
 
+export type RalphWorkflowDefaults = {
+  tdd: boolean
+  deployVerification: boolean
+  maxPlanIterations: number
+  maxGateFixAttempts: number
+  maxReviewFixCycles: number
+  maxDeployFixCycles: number
+}
+
+export const DEFAULT_WORKFLOW: RalphWorkflowDefaults = {
+  tdd: true,
+  deployVerification: true,
+  maxPlanIterations: 3,
+  maxGateFixAttempts: 2,
+  maxReviewFixCycles: 2,
+  maxDeployFixCycles: 3,
+}
+
+export type RalphRuntimeContext = {
+  runId: string
+  sessionId?: string
+}
+
 export type PRDTaskStatus = 'pending' | 'in_progress' | 'review' | 'fix' | 'approved' | 'merged'
 
 export type PRDTask = {

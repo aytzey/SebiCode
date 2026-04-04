@@ -83,6 +83,7 @@ describe('sebiralph reopen helpers', () => {
     expect(reopened.phase).toBe('deploy_verify')
     expect(reopened.status).toBe('active')
     expect(reopened.qualityLoopExtensions).toBe(1)
+    expect(reopened.lastQualityVerdict).toBeUndefined()
   })
 
   test('shouldGrantManualLoopExtension is true for completed or limit-reached loop runs', () => {
@@ -111,6 +112,21 @@ describe('sebiralph reopen helpers', () => {
         }),
       ),
     ).toBe(true)
+  })
+
+  test('shouldGrantManualLoopExtension does not re-grant on an already reactivated run with remaining budget', () => {
+    expect(
+      shouldGrantManualLoopExtension(
+        makeRun({
+          phase: 'deploy_verify',
+          status: 'active',
+          lastQualityVerdict: 'limit_reached',
+          qualityLoopsCompleted: 3,
+          qualityLoopExtensions: 1,
+          completedAt: undefined,
+        }),
+      ),
+    ).toBe(false)
   })
 
   test('shouldKeepLoopRunOpen keeps a loop run active when reopen is newer than completion', () => {

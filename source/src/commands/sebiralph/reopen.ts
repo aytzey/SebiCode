@@ -21,7 +21,10 @@ export function shouldGrantManualLoopExtension(
     return true
   }
 
-  if (run.lastQualityVerdict === 'limit_reached') {
+  if (
+    run.lastQualityVerdict === 'limit_reached' &&
+    (run.status === 'blocked' || run.phase === 'blocked')
+  ) {
     return true
   }
 
@@ -72,6 +75,8 @@ export function grantManualLoopExtension(
   run: SebiRalphRunState,
   reopenedAt = new Date().toISOString(),
 ): SebiRalphRunState {
+  const reactivatedFromQualityLimit =
+    run.lastQualityVerdict === 'limit_reached' && shouldReactivateLoopRun(run)
   const nextRun: SebiRalphRunState = {
     ...run,
     qualityLoopExtensions: run.qualityLoopExtensions + 1,
@@ -83,6 +88,10 @@ export function grantManualLoopExtension(
     nextRun.phase = 'deploy_verify'
     nextRun.status = 'active'
     nextRun.completedAt = undefined
+  }
+
+  if (reactivatedFromQualityLimit) {
+    delete nextRun.lastQualityVerdict
   }
 
   return nextRun

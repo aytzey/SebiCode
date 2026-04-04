@@ -51,12 +51,11 @@ void cleanupIntegrationBranch
 
 export function registerSebiRalphSkill(): void {
   registerBundledSkill({
-    name: 'sebiralph-template',
-    description: 'Internal SebiRalph harness prompt template used by the built-in /sebiralph command.',
-    whenToUse: 'Internal only. The built-in /sebiralph command manages runtime state and invokes this template.',
-    userInvocable: false,
-    disableModelInvocation: true,
-    isHidden: true,
+    name: 'sebiralph',
+    description: 'Multi-provider swarm harness: Claude plans + reviews, Codex implements. 8-phase workflow with TDD, deploy verification, and parallel wave execution in isolated worktrees.',
+    aliases: ['ralph'],
+    whenToUse: 'When the user wants to orchestrate a complex implementation using both Claude and Codex models collaboratively via /sebiralph <task>',
+    userInvocable: true,
     argumentHint: '<task description>',
     effort: 'max' as import('../../utils/effort.js').EffortValue,
 

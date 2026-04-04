@@ -1,6 +1,10 @@
 import type { PRDTask } from './types.js'
 
-export function buildReviewPrompt(task: PRDTask, diffOutput: string, tddEnabled = true): string {
+export function buildReviewPrompt(
+  task: PRDTask,
+  diffOutput: string,
+  tddEnabled = true,
+): string {
   return `Review this diff for task "${task.title}" (${task.id}).
 
 ## Acceptance Criteria

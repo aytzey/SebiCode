@@ -15,14 +15,21 @@
  *  - integration.ts → git worktree/branch commands
  */
 
-import type { RalphConfig, RalphWorkflowDefaults } from './types.js'
+import type {
+  RalphConfig,
+  RalphRuntimeContext,
+  RalphWorkflowDefaults,
+} from './types.js'
 import { formatConfigSummary, formatWorkflowSummary } from './config.js'
 import { PLAN_JSON_SCHEMA_PROMPT } from './prd.js'
 import { HARD_GATES } from './planner.js'
 
-function phaseConfig(config: RalphConfig, workflow: RalphWorkflowDefaults): string {
+function phaseConfig(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   return `
-## PHASE 0 — Config Review  ✦ HARD STOP
+## PHASE 0 — Config Review ${workflow.loopMode ? '✦ AUTO-CONTINUE IN LOOP MODE' : '✦ HARD STOP'}
 
 Current role assignments:
 ${formatConfigSummary(config)}
@@ -35,11 +42,16 @@ TDD default meaning:
 - The harness does NOT declare success while TDD is ON until the final integrated change is deployed and runtime-verified
 - If deploy/runtime verification exposes a gap, the harness re-enters a fix loop until the gap is closed or a real external blocker is proven
 
-Display the config and workflow defaults to the user and ask:
-> "SebiRalph config above. TDD is ON by default. Approve? Reply **yes** to proceed, **role=N** to change a model, or **tdd=off** to disable the default TDD workflow for this run."
+Loop mode meaning:
+- ${workflow.loopMode ? `LOOP MODE IS ON for this run. After a successful deploy/runtime verification pass, the harness must critique the result, identify any material code/UX/reliability/performance gaps, and launch another refinement round until the quality bar is met or ${workflow.maxQualityLoops} refinement loops are used.` : 'Loop mode is OFF for this run. The harness may stop after the first deploy/runtime verification pass.'}
 
-**DO NOT proceed to Phase 1 until the user explicitly approves.**
-If the user disables TDD, restate that deploy verification becomes optional for this run and ask for confirmation again.
+Display the config and workflow defaults to the user and ask:
+> "SebiRalph config above. TDD is ON by default.${workflow.loopMode ? ' Loop mode is also ON for this run.' : ''} Approve? Reply **yes** to proceed, **role=N** to change a model, or **tdd=off** to disable the default TDD workflow for this run."
+
+${workflow.loopMode
+  ? `In loop mode, the current config is PRE-APPROVED. Briefly display the defaults, note that the user can still interrupt with overrides, then continue immediately to Phase 1. Only stop here if the user explicitly requested config changes in the current conversation.`
+  : `**DO NOT proceed to Phase 1 until the user explicitly approves.**
+If the user disables TDD, restate that deploy verification becomes optional for this run and ask for confirmation again.`}
 `
 }
 
@@ -82,7 +94,10 @@ and carry that forward. **Do not invent deploy commands.**
 `
 }
 
-function phasePlan(config: RalphConfig, workflow: RalphWorkflowDefaults): string {
+function phasePlan(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   return `
 ## PHASE 2 — Planning (Planner Subagent)
 
@@ -121,6 +136,7 @@ ${formatConfigSummary(config)}
 ## Workflow Defaults
 TDD: ${workflow.tdd ? 'ON' : 'OFF'}
 Deploy verification: ${workflow.deployVerification ? 'REQUIRED when TDD is ON' : 'OPTIONAL'}
+Loop mode: ${workflow.loopMode ? `ON (${workflow.maxQualityLoops} refinement loops max)` : 'OFF'}
 
 ## Instructions
 1. Break the work into discrete tasks with clear boundaries
@@ -150,6 +166,7 @@ After receiving the Planner's response, validate the JSON:
 6. Check: shared contract tasks are in wave 0
 7. Check: within each wave, no two tasks share overlapping owned paths
 8. Check: final-wave tasks mention deploy/runtime verification when DELIVERY_CONTEXT includes a deployable surface
+9. ${workflow.loopMode ? 'Check: the plan leaves room for at least one refinement pass after the first deploy instead of treating first-pass deploy success as the terminal quality bar.' : 'No explicit loop-mode planning required for this run.'}
 
 If validation fails, show errors and ask Planner to revise. Max 2 fix attempts.
 
@@ -157,7 +174,10 @@ If validation fails, show errors and ask Planner to revise. Max 2 fix attempts.
 `
 }
 
-function phaseEvaluate(config: RalphConfig, workflow: RalphWorkflowDefaults): string {
+function phaseEvaluate(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   return `
 ## PHASE 3 — Evaluation (Evaluator Subagent)
 
@@ -222,7 +242,7 @@ If still rejected after ${workflow.maxPlanIterations} iterations → show the ev
 
 function phaseApprove(workflow: RalphWorkflowDefaults): string {
   return `
-## PHASE 4 — PRD Approval  ✦ HARD STOP
+## PHASE 4 — PRD Approval ${workflow.loopMode ? '✦ AUTO-CONTINUE IN LOOP MODE' : '✦ HARD STOP'}
 
 **Entry:** Plan approved by evaluator.
 
@@ -233,6 +253,7 @@ Render the plan as a markdown table. For each wave, show:
 Then display a short delivery summary:
 - TDD: ${workflow.tdd ? 'ON by default' : 'OFF for this run'}
 - Deploy verification: ${workflow.deployVerification ? 'required when TDD is ON' : 'optional'}
+- Loop mode: ${workflow.loopMode ? `ON (${workflow.maxQualityLoops} refinement loops max)` : 'OFF'}
 - Delivery context: deploy command / runtime surface / verification command / rollback hint
 
 If \`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`, stop and ask the user for the missing deploy/runtime verification path before implementation starts.
@@ -240,14 +261,19 @@ If \`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`, stop and ask the user
 Then ask the user:
 > "Implementation plan above. TDD is ${workflow.tdd ? 'ON' : 'OFF'} for this run. Approve? Reply **Y** to start implementation, **n** to reject, or **edit** with changes."
 
-**DO NOT proceed to Phase 5 until the user explicitly approves.**
-If user requests edits, modify the plan and re-display.
+${workflow.loopMode
+  ? `In loop mode, the PRD is PRE-APPROVED after you display it. Continue directly into implementation unless deploy/runtime input is missing or the user explicitly interrupted with edits.`
+  : `**DO NOT proceed to Phase 5 until the user explicitly approves.**
+If user requests edits, modify the plan and re-display.`}
 
 **Exit:** User approves. Move to Phase 5.
 `
 }
 
-function phaseImplement(config: RalphConfig, workflow: RalphWorkflowDefaults): string {
+function phaseImplement(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   const tddBlock = workflow.tdd
     ? `## TDD Workflow
 1. Add or update the regression/spec that proves the task is incomplete
@@ -403,7 +429,10 @@ Agent({
 `
 }
 
-function phaseReview(config: RalphConfig, workflow: RalphWorkflowDefaults): string {
+function phaseReview(
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+): string {
   return `
 ## PHASE 7 — Review & Fix (Reviewer Subagent)
 
@@ -485,6 +514,9 @@ function phaseMerge(workflow: RalphWorkflowDefaults): string {
 git branch ralph/integration-$(date +%s | cut -c1-8)
 \`\`\`
 
+Immediately after choosing the branch name, emit the integration marker using the same \`run_id\` from the Progress Marker Protocol:
+\`<sebiralph-integration run_id="{current_run_id}" branch="{integration_branch}" />\`
+
 ### Step 2: Merge each approved task
 For each APPROVED task (skip GATE_FAILED and NEEDS_MANUAL_REVIEW):
 \`\`\`bash
@@ -501,6 +533,9 @@ When TDD is ON, deployment is REQUIRED unless the user explicitly disabled TDD.
 - Use \`deliveryContext.deployCommand\` from Phase 1
 - If \`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`, stop and ask the user instead of guessing
 - Record the deploy target, commit SHA, and any preview/staging URL returned by the deploy command
+- Emit a deploy marker for each attempt:
+  - Before running deploy: \`<sebiralph-deploy run_id="{current_run_id}" status="pending" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />\`
+  - On deploy failure/blocker: \`<sebiralph-deploy run_id="{current_run_id}" status="failed|blocked" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />\`
 
 ### Step 4: Runtime verification of the deployed change
 
@@ -520,6 +555,9 @@ Minimum requirement:
 - Run the documented smoke/e2e/runtime command or hit the live surface directly
 - Capture the evidence
 - Run at least one adversarial probe
+- After the verdict is known, emit:
+  - Pass: \`<sebiralph-deploy run_id="{current_run_id}" status="passed" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />\`
+  - Fail/block: \`<sebiralph-deploy run_id="{current_run_id}" status="failed|blocked" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />\`
 
 ### Step 5: Deploy fix loop
 
@@ -535,6 +573,30 @@ If deploy OR runtime verification fails and TDD is ON:
 Repeat until deploy verification passes or you hit **${workflow.maxDeployFixCycles} deploy fix cycles**.
 If still failing after ${workflow.maxDeployFixCycles} cycles, stop and report the blocker with the latest deploy/verification evidence.
 
+### Step 5B: Quality refinement loop ${workflow.loopMode ? '(REQUIRED for this run)' : '(optional / skip by default)'}
+
+${workflow.loopMode
+  ? `When deploy verification passes, do NOT immediately stop. Run a quality audit against the integrated diff and the deployed surface.
+
+Spawn a reviewer-quality pass:
+\`\`\`
+Agent({
+  description: "ralph-quality: critique deployed result",
+  prompt: "Original task: {TASK}\\nIntegration branch: {integration_branch}\\nDeployed surface: {runtime_surface}\\nRecent merged diff summary: {diff_summary}\\nJudge the shipped result against a high bar: correctness, maintainability, test coverage, edge-case handling, UX polish, performance, and operational safety. Treat 'good enough' as a REFINE verdict. Only output QUALITY_VERDICT: SHIP_IT when the result is genuinely strong and you would be comfortable shipping it without apology. Otherwise output QUALITY_VERDICT: REFINE plus a short ranked improvement backlog with deploy-visible wins first."
+})
+\`\`\`
+
+Handling:
+1. Before recording the verdict, compute the current refinement iteration number and emit a loop marker:
+   - Refine: \`<sebiralph-loop run_id="{current_run_id}" iteration="{quality_iteration}" verdict="refine" />\`
+   - Ship it: \`<sebiralph-loop run_id="{current_run_id}" iteration="{quality_iteration}" verdict="ship_it" />\`
+   - Limit reached: \`<sebiralph-loop run_id="{current_run_id}" iteration="{quality_iteration}" verdict="limit_reached" />\`
+2. If \`QUALITY_VERDICT: SHIP_IT\`, proceed to cleanup and final report
+3. If \`QUALITY_VERDICT: REFINE\`, create a focused refinement mini-plan with at most 3 tasks, then return to Phase 5 → 6 → 7 → 8 using the same run and integration branch
+4. Re-deploy and re-verify after each refinement round
+5. Keep looping until \`SHIP_IT\` or you hit **${workflow.maxQualityLoops} refinement loops**
+6. If the loop limit is hit, stop and report what remains instead of claiming perfection`
+  : `If the user explicitly asks for more polish after a successful deploy, you may run one extra critique pass. Otherwise continue to cleanup.`}
 ### Step 6: Cleanup
 
 After successful deployment verification (or after final escalation), clean up:
@@ -563,7 +625,40 @@ If any tasks were GATE_FAILED or NEEDS_MANUAL_REVIEW, list them with details.
 `
 }
 
-export function buildHarnessPrompt(userTask: string, config: RalphConfig, workflow: RalphWorkflowDefaults): string {
+function buildProgressProtocol(runtime?: RalphRuntimeContext): string {
+  if (!runtime) {
+    return ''
+  }
+
+  return `
+## Run Metadata
+- SebiRalph run id: ${runtime.runId}
+${runtime.sessionId ? `- Session id: ${runtime.sessionId}` : ''}
+
+## Progress Marker Protocol
+Emit a standalone progress marker whenever you enter a phase or reach a hard stop.
+Use this exact shape:
+- Entered phase: <sebiralph-progress run_id="${runtime.runId}" phase="{phase_id}" status="entered" />
+- Waiting for user: <sebiralph-progress run_id="${runtime.runId}" phase="{phase_id}" status="awaiting_user" />
+- Phase completed: <sebiralph-progress run_id="${runtime.runId}" phase="{phase_id}" status="completed" />
+- Final success: <sebiralph-progress run_id="${runtime.runId}" phase="completed" status="completed" />
+- Hard blocker: <sebiralph-progress run_id="${runtime.runId}" phase="blocked" status="blocked" />
+- Integration branch selected: <sebiralph-integration run_id="${runtime.runId}" branch="{integration_branch}" />
+- Deploy status update: <sebiralph-deploy run_id="${runtime.runId}" status="{pending|passed|failed|blocked}" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />
+- Quality loop verdict: <sebiralph-loop run_id="${runtime.runId}" iteration="{quality_iteration}" verdict="{refine|ship_it|limit_reached}" />
+
+Allowed phase ids:
+config_review, explore, plan, evaluate, prd_approval, wave_execution, gate_validation, review_fix, integration_merge, deploy_verify, completed, blocked
+
+Keep the markers short and exact. Use empty strings for unknown target/url values, and do not place literal double quotes inside marker attribute values. They are used for harness durability and resume.`
+}
+
+export function buildHarnessPrompt(
+  userTask: string,
+  config: RalphConfig,
+  workflow: RalphWorkflowDefaults,
+  runtime?: RalphRuntimeContext,
+): string {
   return `# /sebiralph — Multi-Provider Swarm Harness
 
 You are the SebiRalph orchestrator. Execute this task using a structured 8-phase workflow with multi-provider AI agents.
@@ -571,14 +666,17 @@ You are the SebiRalph orchestrator. Execute this task using a structured 8-phase
 ## Task
 ${userTask}
 
+${buildProgressProtocol(runtime)}
+
 ## Workflow Rules
 - Execute phases IN ORDER (0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8)
-- Phases 0 and 4 are HARD STOPS — wait for user approval
+- ${workflow.loopMode ? 'Phases 0 and 4 are pre-approved checkpoints in loop mode. Display them, then continue unless missing deploy input or the user explicitly interrupts.' : 'Phases 0 and 4 are HARD STOPS — wait for user approval'}
 - Always set the \`provider\` field on Agent calls — it routes to the correct AI model
 - Workers MUST use \`isolation: "worktree"\` for code isolation
 - Wave 1+ workers MUST use \`run_in_background: true\` for parallel execution
 - **TDD DEFAULT**: TDD is ON unless the user explicitly turns it off in Phase 0
 - **DONE MEANS DEPLOYED**: When TDD is ON, do not declare success until the integrated change is deployed and runtime-verified
+- **LOOP MODE**: ${workflow.loopMode ? `Enabled. After the first successful deploy/verify pass, keep refining and redeploying until the quality audit says SHIP_IT or ${workflow.maxQualityLoops} refinement loops are exhausted.` : 'Disabled unless the user explicitly asks for another refinement round.'}
 - **KEEP-ALIVE**: When waiting for background agents, ALWAYS make a tool call — NEVER end your turn with text-only while agents are pending
 - On unrecoverable failure, report to user — never loop forever
 - Track task status throughout: PENDING → IN_PROGRESS → GATES_PASS → APPROVED → MERGED → DEPLOY_VERIFIED

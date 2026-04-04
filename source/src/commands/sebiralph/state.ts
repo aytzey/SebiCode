@@ -91,6 +91,7 @@ async function loadRunFile(filePath: string): Promise<SebiRalphRunState | null> 
     parsed.workflow.loopMode ??= false
     parsed.workflow.maxQualityLoops ??= 0
     parsed.qualityLoopsCompleted ??= 0
+    parsed.qualityLoopExtensions ??= 0
     if (!parsed.launchMode) {
       parsed.launchMode = parsed.workflow.loopMode ? 'loop' : 'standard'
     }
@@ -149,6 +150,7 @@ export async function createSebiRalphRun(params: {
       fixCycles: 0,
     },
     qualityLoopsCompleted: 0,
+    qualityLoopExtensions: 0,
   }
   return saveSebiRalphRun(run)
 }

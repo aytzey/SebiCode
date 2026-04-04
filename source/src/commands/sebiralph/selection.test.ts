@@ -50,6 +50,7 @@ function makeLookup(
         fixCycles: 0,
       },
       qualityLoopsCompleted: 0,
+      qualityLoopExtensions: 0,
       ...overrides,
     },
   }

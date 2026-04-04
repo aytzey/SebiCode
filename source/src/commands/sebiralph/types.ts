@@ -90,6 +90,7 @@ export type SebiRalphRunState = {
   waveRecords: SebiRalphWaveRecord[]
   deploy: SebiRalphDeployRecord
   qualityLoopsCompleted: number
+  qualityLoopExtensions: number
   lastQualityVerdict?: SebiRalphQualityVerdict
   lastProgressMarker?: string
   lastError?: string

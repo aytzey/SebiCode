@@ -9,9 +9,14 @@ import { buildHarnessPrompt } from '../../skills/sebiralph/orchestrator.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import { getLastSessionLog } from '../../utils/sessionStorage.js'
 import {
+  getEffectiveQualityLoopBudget,
+  getRemainingQualityLoopBudget,
+} from './budget.js'
+import {
   createSebiRalphRun,
   findSebiRalphRun,
   findReusableSebiRalphRun,
+  saveSebiRalphRun,
 } from './state.js'
 import type { SebiRalphRunLookup, SebiRalphRunState } from './types.js'
 
@@ -38,10 +43,8 @@ function shouldReopenCompletedLoopRun(run: SebiRalphRunState): boolean {
 function formatRunSummary(run: SebiRalphRunState): string {
   const deployStatus =
     run.deploy.status === 'unknown' ? 'not observed yet' : run.deploy.status
-  const remainingQualityLoops = Math.max(
-    run.workflow.maxQualityLoops - run.qualityLoopsCompleted,
-    0,
-  )
+  const effectiveQualityLoopBudget = getEffectiveQualityLoopBudget(run)
+  const remainingQualityLoops = getRemainingQualityLoopBudget(run)
   const lines = [
     `SebiRalph run ${run.id.slice(0, 8)}`,
     `Mode: ${run.launchMode === 'loop' ? 'loop' : 'standard'}`,
@@ -55,7 +58,9 @@ function formatRunSummary(run: SebiRalphRunState): string {
   ]
 
   if (run.launchMode === 'loop') {
-    lines.push(`Quality loops max: ${run.workflow.maxQualityLoops}`)
+    lines.push(`Quality loops base max: ${run.workflow.maxQualityLoops}`)
+    lines.push(`Quality loop extensions: ${run.qualityLoopExtensions}`)
+    lines.push(`Quality loops budget: ${effectiveQualityLoopBudget}`)
     lines.push(`Quality loops completed: ${run.qualityLoopsCompleted}`)
     lines.push(`Quality loops remaining: ${remainingQualityLoops}`)
     if (run.lastQualityVerdict) {
@@ -89,6 +94,7 @@ function buildResumePrompt(
   },
 ): string {
   const reopenCompletedLoop = options?.reopenCompletedLoop === true
+  const effectiveQualityLoopBudget = getEffectiveQualityLoopBudget(run)
 
   return [
     `Continue SebiRalph run ${run.id}.`,
@@ -98,11 +104,14 @@ function buildResumePrompt(
     `Current inferred status: ${run.status}.`,
     `TDD is ${run.workflow.tdd ? 'ON' : 'OFF'} for this run.`,
     run.launchMode === 'loop'
-      ? `Loop mode is ON with up to ${run.workflow.maxQualityLoops} post-deploy refinement loops.`
+      ? `Loop mode is ON with an effective quality-loop budget of ${effectiveQualityLoopBudget}.`
       : 'Loop mode is OFF for this run.',
     run.launchMode === 'loop'
-      ? `Observed quality loop usage so far: ${run.qualityLoopsCompleted}/${run.workflow.maxQualityLoops}.`
+      ? `Observed quality loop usage so far: ${run.qualityLoopsCompleted}/${effectiveQualityLoopBudget}.`
       : 'No quality loop budget applies to this run.',
+    run.launchMode === 'loop'
+      ? `Explicit user-requested loop extensions recorded so far: ${run.qualityLoopExtensions}.`
+      : 'No explicit loop extensions apply to this run.',
     run.launchMode === 'loop' && run.lastQualityVerdict
       ? `Latest recorded quality verdict: ${run.lastQualityVerdict}.`
       : 'No quality verdict has been recorded yet.',
@@ -110,7 +119,7 @@ function buildResumePrompt(
       ? 'Loop checkpoints are pre-approved: do not stop for config review or PRD approval unless deploy input is missing or the user explicitly interrupts.'
       : 'Config review and PRD approval still require explicit user confirmation.',
     reopenCompletedLoop
-      ? 'The user explicitly re-ran the same loop command after a completed run. Re-open the existing run instead of starting over from Phase 0.'
+      ? 'The user explicitly re-ran the same loop command after a completed run. Re-open the existing run instead of starting over from Phase 0, and treat this invocation as one newly granted refinement slot.'
       : run.status === 'blocked'
       ? 'The run is currently blocked. Attempt recovery automatically if the blocker looks transient; only stop again if a true external blocker remains.'
       : 'Resume the run from its latest durable point.',
@@ -121,9 +130,10 @@ function buildResumePrompt(
       ? 'A deploy pass was already observed. Start from a fresh quality audit of the current integrated result, then refine, redeploy, and re-verify if gaps remain.'
       : `Latest deploy status: ${run.deploy.status}.`,
     run.deploy.url ? `Latest deploy URL: ${run.deploy.url}` : 'No deploy URL has been recorded yet.',
-    run.launchMode === 'loop' && run.qualityLoopsCompleted >= run.workflow.maxQualityLoops
+    run.launchMode === 'loop' &&
+    run.qualityLoopsCompleted >= effectiveQualityLoopBudget
       ? 'The recorded loop budget is exhausted. Only stop if the remaining gaps are truly external blockers; otherwise justify any extra refinement round explicitly.'
-      : 'Stay within the configured quality-loop budget unless a new user instruction expands it.',
+      : 'Stay within the current effective quality-loop budget unless a new user instruction expands it again.',
     'Use the existing transcript state; do not restart from Phase 0 unless the user explicitly asks to reconfigure the run.',
     `Keep emitting progress markers with run_id="${run.id}".`,
     reopenCompletedLoop
@@ -132,6 +142,21 @@ function buildResumePrompt(
       ? 'The run is already complete. Summarize only if the user asks.'
       : 'Resume from the last unfinished phase and continue the harness.',
   ].join('\n')
+}
+
+async function extendCompletedLoopRun(
+  lookup: SebiRalphRunLookup,
+): Promise<SebiRalphRunLookup> {
+  const nextRun: SebiRalphRunState = {
+    ...lookup.run,
+    qualityLoopExtensions: lookup.run.qualityLoopExtensions + 1,
+    updatedAt: new Date().toISOString(),
+  }
+  await saveSebiRalphRun(nextRun)
+  return {
+    ...lookup,
+    run: nextRun,
+  }
 }
 
 async function resumeRunSession(
@@ -185,19 +210,23 @@ async function continueExistingRun(
   onDone: Parameters<LocalJSXCommandCall>[0],
 ): Promise<null> {
   const reopenCompletedLoop = shouldReopenCompletedLoopRun(lookup.run)
-  if (lookup.run.sessionId !== getSessionId()) {
-    await resumeRunSession(lookup, context, onDone, { reopenCompletedLoop })
+  const nextLookup = reopenCompletedLoop
+    ? await extendCompletedLoopRun(lookup)
+    : lookup
+
+  if (nextLookup.run.sessionId !== getSessionId()) {
+    await resumeRunSession(nextLookup, context, onDone, { reopenCompletedLoop })
     return null
   }
 
-  const shouldQuery = reopenCompletedLoop || shouldAutoContinueRun(lookup.run)
+  const shouldQuery = reopenCompletedLoop || shouldAutoContinueRun(nextLookup.run)
   const intro = reopenCompletedLoop
-    ? 'Reopening completed SebiRalph loop run for another refinement pass.'
+    ? 'Reopening completed SebiRalph loop run with one additional refinement budget slot.'
     : 'Reusing existing SebiRalph run for this task.'
-  onDone(`${intro}\n\n${formatRunSummary(lookup.run)}`, {
+  onDone(`${intro}\n\n${formatRunSummary(nextLookup.run)}`, {
     shouldQuery,
     metaMessages: shouldQuery
-      ? [buildResumePrompt(lookup.run, { reopenCompletedLoop })]
+      ? [buildResumePrompt(nextLookup.run, { reopenCompletedLoop })]
       : undefined,
   })
   return null

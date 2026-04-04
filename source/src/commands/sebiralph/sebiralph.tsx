@@ -11,6 +11,7 @@ import { getLastSessionLog } from '../../utils/sessionStorage.js'
 import {
   createSebiRalphRun,
   findSebiRalphRun,
+  findReusableSebiRalphRun,
 } from './state.js'
 import type { SebiRalphRunLookup, SebiRalphRunState } from './types.js'
 
@@ -32,6 +33,10 @@ function formatRunSummary(run: SebiRalphRunState): string {
     `Deploy status: ${deployStatus}`,
     `Session: ${run.sessionId}`,
   ]
+
+  if (run.launchMode === 'loop') {
+    lines.push(`Quality loops max: ${run.workflow.maxQualityLoops}`)
+  }
 
   if (run.integrationBranch) {
     lines.push(`Integration branch: ${run.integrationBranch}`)
@@ -103,6 +108,25 @@ async function resumeRunSession(
       `Failed to resume SebiRalph run ${lookup.run.id.slice(0, 8)}: ${(error as Error).message}`,
     )
   }
+}
+
+async function continueExistingRun(
+  lookup: SebiRalphRunLookup,
+  context: Parameters<LocalJSXCommandCall>[1],
+  onDone: Parameters<LocalJSXCommandCall>[0],
+): Promise<null> {
+  if (lookup.run.sessionId !== getSessionId()) {
+    await resumeRunSession(lookup, context, onDone)
+    return null
+  }
+
+  const shouldQuery =
+    lookup.run.status === 'active' && lookup.run.phase !== 'completed'
+  onDone(`Reusing existing SebiRalph run for this task.\n\n${formatRunSummary(lookup.run)}`, {
+    shouldQuery,
+    metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,
+  })
+  return null
 }
 
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
@@ -180,6 +204,14 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   if (!taskText) {
     onDone('Provide a task after /sebiralph loop <task>.')
     return null
+  }
+
+  const existingRun = await findReusableSebiRalphRun({
+    userTask: taskText,
+    launchMode,
+  })
+  if (existingRun) {
+    return continueExistingRun(existingRun, context, onDone)
   }
 
   const run = await createSebiRalphRun({

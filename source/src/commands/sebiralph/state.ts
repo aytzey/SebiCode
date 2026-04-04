@@ -10,6 +10,7 @@ import type { LogOption } from '../../types/logs.js'
 import { getLastSessionLog } from '../../utils/sessionStorage.js'
 import { getProjectDir } from '../../utils/sessionStoragePortable.js'
 import { deriveRunHydrationFromTranscript } from './markers.js'
+import { selectReusableSebiRalphRun } from './selection.js'
 import type {
   SebiRalphExecutionPolicy,
   SebiRalphRunLookup,
@@ -265,4 +266,25 @@ export async function findSebiRalphRun(
   }
 
   return null
+}
+
+export async function findReusableSebiRalphRun(
+  options: {
+    userTask: string
+    launchMode: SebiRalphRunState['launchMode']
+  },
+  projectPath = getOriginalCwd(),
+): Promise<SebiRalphRunLookup | null> {
+  const runs = await listSebiRalphRuns(projectPath)
+  if (runs.length === 0) {
+    return null
+  }
+
+  const hydratedRuns = await Promise.all(runs.map(run => hydrateSebiRalphRun(run)))
+  return (
+    selectReusableSebiRalphRun(hydratedRuns, {
+      ...options,
+      currentSessionId: getSessionId(),
+    }) ?? null
+  )
 }

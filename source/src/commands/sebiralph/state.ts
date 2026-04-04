@@ -33,11 +33,13 @@ function buildExecutionPolicy(
     fullAuto: true,
     tdd: workflow.tdd,
     deployVerification: workflow.deployVerification,
+    loopMode: workflow.loopMode,
     optionalRemotePush: true,
     maxPlanIterations: workflow.maxPlanIterations,
     maxGateFixAttempts: workflow.maxGateFixAttempts,
     maxReviewFixCycles: workflow.maxReviewFixCycles,
     maxDeployFixCycles: workflow.maxDeployFixCycles,
+    maxQualityLoops: workflow.maxQualityLoops,
   }
 }
 
@@ -84,7 +86,19 @@ function cloneRun(run: SebiRalphRunState): SebiRalphRunState {
 async function loadRunFile(filePath: string): Promise<SebiRalphRunState | null> {
   try {
     const raw = await readFile(filePath, 'utf8')
-    return JSON.parse(raw) as SebiRalphRunState
+    const parsed = JSON.parse(raw) as SebiRalphRunState
+    parsed.workflow.loopMode ??= false
+    parsed.workflow.maxQualityLoops ??= 0
+    if (!parsed.launchMode) {
+      parsed.launchMode = parsed.workflow.loopMode ? 'loop' : 'standard'
+    }
+    if (parsed.executionPolicy.loopMode === undefined) {
+      parsed.executionPolicy.loopMode = parsed.workflow.loopMode
+    }
+    if (parsed.executionPolicy.maxQualityLoops === undefined) {
+      parsed.executionPolicy.maxQualityLoops = parsed.workflow.maxQualityLoops
+    }
+    return parsed
   } catch {
     return null
   }
@@ -106,6 +120,7 @@ export async function createSebiRalphRun(params: {
   userTask: string
   config: RalphConfig
   workflow: RalphWorkflowDefaults
+  launchMode?: 'standard' | 'loop'
   projectPath?: string
   sessionId?: string
 }): Promise<SebiRalphRunState> {
@@ -119,6 +134,7 @@ export async function createSebiRalphRun(params: {
     userTask: params.userTask,
     createdAt: now,
     updatedAt: now,
+    launchMode: params.launchMode ?? (params.workflow.loopMode ? 'loop' : 'standard'),
     config: params.config,
     workflow: params.workflow,
     executionPolicy: buildExecutionPolicy(params.workflow),

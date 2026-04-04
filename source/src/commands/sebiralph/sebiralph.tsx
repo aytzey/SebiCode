@@ -1,6 +1,10 @@
 import type { UUID } from 'crypto'
 import { getSessionId } from '../../bootstrap/state.js'
-import { DEFAULT_CONFIG, DEFAULT_WORKFLOW } from '../../skills/sebiralph/types.js'
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_WORKFLOW,
+  LOOP_WORKFLOW,
+} from '../../skills/sebiralph/types.js'
 import { buildHarnessPrompt } from '../../skills/sebiralph/orchestrator.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import { getLastSessionLog } from '../../utils/sessionStorage.js'
@@ -19,6 +23,7 @@ function formatRunSummary(run: SebiRalphRunState): string {
     run.deploy.status === 'unknown' ? 'not observed yet' : run.deploy.status
   const lines = [
     `SebiRalph run ${run.id.slice(0, 8)}`,
+    `Mode: ${run.launchMode === 'loop' ? 'loop' : 'standard'}`,
     `Task: ${run.userTask}`,
     `Status: ${run.status}`,
     `Phase: ${formatPhase(run.phase)}`,
@@ -51,9 +56,13 @@ function buildResumePrompt(run: SebiRalphRunState): string {
   return [
     `Continue SebiRalph run ${run.id}.`,
     `Original task: ${run.userTask}`,
+    `Launch mode: ${run.launchMode === 'loop' ? 'LOOP' : 'STANDARD'}.`,
     `Current inferred phase: ${run.phase}.`,
     `Current inferred status: ${run.status}.`,
     `TDD is ${run.workflow.tdd ? 'ON' : 'OFF'} for this run.`,
+    run.launchMode === 'loop'
+      ? `Loop mode is ON with up to ${run.workflow.maxQualityLoops} post-deploy refinement loops.`
+      : 'Loop mode is OFF for this run.',
     'Use the existing transcript state; do not restart from Phase 0 unless the user explicitly asks to reconfigure the run.',
     `Keep emitting progress markers with run_id="${run.id}".`,
     run.phase === 'completed'
@@ -158,12 +167,28 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     return null
   }
 
+  if (trimmed === 'loop') {
+    onDone('Use /sebiralph loop <task> to start an autonomous refinement loop.')
+    return null
+  }
+
+  const launchMode = trimmed.startsWith('loop ') ? 'loop' : 'standard'
+  const taskText =
+    launchMode === 'loop' ? trimmed.slice('loop '.length).trim() : trimmed
+  const workflow = launchMode === 'loop' ? LOOP_WORKFLOW : DEFAULT_WORKFLOW
+
+  if (!taskText) {
+    onDone('Provide a task after /sebiralph loop <task>.')
+    return null
+  }
+
   const run = await createSebiRalphRun({
-    userTask: trimmed,
+    userTask: taskText,
     config: DEFAULT_CONFIG,
-    workflow: DEFAULT_WORKFLOW,
+    workflow,
+    launchMode,
   })
-  const harnessPrompt = buildHarnessPrompt(trimmed, DEFAULT_CONFIG, DEFAULT_WORKFLOW, {
+  const harnessPrompt = buildHarnessPrompt(taskText, DEFAULT_CONFIG, workflow, {
     runId: run.id,
     sessionId: run.sessionId,
   })

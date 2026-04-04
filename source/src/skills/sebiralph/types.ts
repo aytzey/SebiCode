@@ -18,19 +18,34 @@ export const DEFAULT_CONFIG: RalphConfig = {
 export type RalphWorkflowDefaults = {
   tdd: boolean
   deployVerification: boolean
+  loopMode: boolean
   maxPlanIterations: number
   maxGateFixAttempts: number
   maxReviewFixCycles: number
   maxDeployFixCycles: number
+  maxQualityLoops: number
 }
 
 export const DEFAULT_WORKFLOW: RalphWorkflowDefaults = {
   tdd: true,
   deployVerification: true,
+  loopMode: false,
   maxPlanIterations: 3,
   maxGateFixAttempts: 2,
   maxReviewFixCycles: 2,
   maxDeployFixCycles: 3,
+  maxQualityLoops: 0,
+}
+
+export const LOOP_WORKFLOW: RalphWorkflowDefaults = {
+  tdd: true,
+  deployVerification: true,
+  loopMode: true,
+  maxPlanIterations: 4,
+  maxGateFixAttempts: 3,
+  maxReviewFixCycles: 3,
+  maxDeployFixCycles: 5,
+  maxQualityLoops: 3,
 }
 
 export type RalphRuntimeContext = {

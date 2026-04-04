@@ -60,11 +60,13 @@ export type SebiRalphExecutionPolicy = {
   fullAuto: boolean
   tdd: boolean
   deployVerification: boolean
+  loopMode: boolean
   optionalRemotePush: boolean
   maxPlanIterations: number
   maxGateFixAttempts: number
   maxReviewFixCycles: number
   maxDeployFixCycles: number
+  maxQualityLoops: number
 }
 
 export type SebiRalphRunState = {
@@ -74,6 +76,7 @@ export type SebiRalphRunState = {
   userTask: string
   createdAt: string
   updatedAt: string
+  launchMode: 'standard' | 'loop'
   config: RalphConfig
   workflow: RalphWorkflowDefaults
   executionPolicy: SebiRalphExecutionPolicy

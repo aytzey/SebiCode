@@ -39,6 +39,7 @@ export function formatWorkflowSummary(workflow: RalphWorkflowDefaults): string {
   return [
     `  TDD: ${workflow.tdd ? 'ON (default)' : 'OFF'}`,
     `  Deploy verification: ${workflow.deployVerification ? 'REQUIRED when TDD is ON' : 'OPTIONAL'}`,
+    `  Loop mode: ${workflow.loopMode ? `ON (${workflow.maxQualityLoops} refinement loops max)` : 'OFF'}`,
     `  Gate fix retries: ${workflow.maxGateFixAttempts}`,
     `  Review fix cycles: ${workflow.maxReviewFixCycles}`,
     `  Deploy fix cycles: ${workflow.maxDeployFixCycles}`,

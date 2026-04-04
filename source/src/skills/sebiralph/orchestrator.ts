@@ -42,8 +42,11 @@ TDD default meaning:
 - The harness does NOT declare success while TDD is ON until the final integrated change is deployed and runtime-verified
 - If deploy/runtime verification exposes a gap, the harness re-enters a fix loop until the gap is closed or a real external blocker is proven
 
+Loop mode meaning:
+- ${workflow.loopMode ? `LOOP MODE IS ON for this run. After a successful deploy/runtime verification pass, the harness must critique the result, identify any material code/UX/reliability/performance gaps, and launch another refinement round until the quality bar is met or ${workflow.maxQualityLoops} refinement loops are used.` : 'Loop mode is OFF for this run. The harness may stop after the first deploy/runtime verification pass.'}
+
 Display the config and workflow defaults to the user and ask:
-> "SebiRalph config above. TDD is ON by default. Approve? Reply **yes** to proceed, **role=N** to change a model, or **tdd=off** to disable the default TDD workflow for this run."
+> "SebiRalph config above. TDD is ON by default.${workflow.loopMode ? ' Loop mode is also ON for this run.' : ''} Approve? Reply **yes** to proceed, **role=N** to change a model, or **tdd=off** to disable the default TDD workflow for this run."
 
 **DO NOT proceed to Phase 1 until the user explicitly approves.**
 If the user disables TDD, restate that deploy verification becomes optional for this run and ask for confirmation again.
@@ -131,6 +134,7 @@ ${formatConfigSummary(config)}
 ## Workflow Defaults
 TDD: ${workflow.tdd ? 'ON' : 'OFF'}
 Deploy verification: ${workflow.deployVerification ? 'REQUIRED when TDD is ON' : 'OPTIONAL'}
+Loop mode: ${workflow.loopMode ? `ON (${workflow.maxQualityLoops} refinement loops max)` : 'OFF'}
 
 ## Instructions
 1. Break the work into discrete tasks with clear boundaries
@@ -160,6 +164,7 @@ After receiving the Planner's response, validate the JSON:
 6. Check: shared contract tasks are in wave 0
 7. Check: within each wave, no two tasks share overlapping owned paths
 8. Check: final-wave tasks mention deploy/runtime verification when DELIVERY_CONTEXT includes a deployable surface
+9. ${workflow.loopMode ? 'Check: the plan leaves room for at least one refinement pass after the first deploy instead of treating first-pass deploy success as the terminal quality bar.' : 'No explicit loop-mode planning required for this run.'}
 
 If validation fails, show errors and ask Planner to revise. Max 2 fix attempts.
 
@@ -246,6 +251,7 @@ Render the plan as a markdown table. For each wave, show:
 Then display a short delivery summary:
 - TDD: ${workflow.tdd ? 'ON by default' : 'OFF for this run'}
 - Deploy verification: ${workflow.deployVerification ? 'required when TDD is ON' : 'optional'}
+- Loop mode: ${workflow.loopMode ? `ON (${workflow.maxQualityLoops} refinement loops max)` : 'OFF'}
 - Delivery context: deploy command / runtime surface / verification command / rollback hint
 
 If \`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`, stop and ask the user for the missing deploy/runtime verification path before implementation starts.
@@ -563,6 +569,27 @@ If deploy OR runtime verification fails and TDD is ON:
 Repeat until deploy verification passes or you hit **${workflow.maxDeployFixCycles} deploy fix cycles**.
 If still failing after ${workflow.maxDeployFixCycles} cycles, stop and report the blocker with the latest deploy/verification evidence.
 
+### Step 5B: Quality refinement loop ${workflow.loopMode ? '(REQUIRED for this run)' : '(optional / skip by default)'}
+
+${workflow.loopMode
+  ? `When deploy verification passes, do NOT immediately stop. Run a quality audit against the integrated diff and the deployed surface.
+
+Spawn a reviewer-quality pass:
+\`\`\`
+Agent({
+  description: "ralph-quality: critique deployed result",
+  prompt: "Original task: {TASK}\\nIntegration branch: {integration_branch}\\nDeployed surface: {runtime_surface}\\nRecent merged diff summary: {diff_summary}\\nCritique the shipped result for code quality, maintainability, reliability, UX polish, performance, and any missed opportunities. If the result is truly strong enough to ship, output QUALITY_VERDICT: SHIP_IT. Otherwise output QUALITY_VERDICT: REFINE plus a short ranked improvement backlog with deploy-visible wins first."
+})
+\`\`\`
+
+Handling:
+1. If \`QUALITY_VERDICT: SHIP_IT\`, proceed to cleanup and final report
+2. If \`QUALITY_VERDICT: REFINE\`, create a focused refinement mini-plan with at most 3 tasks, then return to Phase 5 → 6 → 7 → 8 using the same run and integration branch
+3. Re-deploy and re-verify after each refinement round
+4. Keep looping until \`SHIP_IT\` or you hit **${workflow.maxQualityLoops} refinement loops**
+5. If the loop limit is hit, stop and report what remains instead of claiming perfection`
+  : `If the user explicitly asks for more polish after a successful deploy, you may run one extra critique pass. Otherwise continue to cleanup.`}
+
 ### Step 6: Cleanup
 
 After successful deployment verification (or after final escalation), clean up:
@@ -641,6 +668,7 @@ ${buildProgressProtocol(runtime)}
 - Wave 1+ workers MUST use \`run_in_background: true\` for parallel execution
 - **TDD DEFAULT**: TDD is ON unless the user explicitly turns it off in Phase 0
 - **DONE MEANS DEPLOYED**: When TDD is ON, do not declare success until the integrated change is deployed and runtime-verified
+- **LOOP MODE**: ${workflow.loopMode ? `Enabled. After the first successful deploy/verify pass, keep refining and redeploying until the quality audit says SHIP_IT or ${workflow.maxQualityLoops} refinement loops are exhausted.` : 'Disabled unless the user explicitly asks for another refinement round.'}
 - **KEEP-ALIVE**: When waiting for background agents, ALWAYS make a tool call — NEVER end your turn with text-only while agents are pending
 - On unrecoverable failure, report to user — never loop forever
 - Track task status throughout: PENDING → IN_PROGRESS → GATES_PASS → APPROVED → MERGED → DEPLOY_VERIFIED

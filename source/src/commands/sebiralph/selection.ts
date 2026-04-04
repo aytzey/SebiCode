@@ -16,7 +16,6 @@ export function selectReusableSebiRalphRun(
   const matches = lookups.filter(lookup => {
     const run = lookup.run
     return (
-      run.status !== 'completed' &&
       run.launchMode === options.launchMode &&
       normalizeSebiRalphTaskText(run.userTask) === expectedTask
     )
@@ -39,12 +38,13 @@ export function selectReusableSebiRalphRun(
     }
   }
 
-  return [...matches].sort((a, b) => {
-    const sameSessionA = a.run.sessionId === options.currentSessionId ? 0 : 1
-    const sameSessionB = b.run.sessionId === options.currentSessionId ? 0 : 1
-    if (sameSessionA !== sameSessionB) {
-      return sameSessionA - sameSessionB
-    }
+  const sortMatches = (candidates: SebiRalphRunLookup[]): SebiRalphRunLookup =>
+    [...candidates].sort((a, b) => {
+      const sameSessionA = a.run.sessionId === options.currentSessionId ? 0 : 1
+      const sameSessionB = b.run.sessionId === options.currentSessionId ? 0 : 1
+      if (sameSessionA !== sameSessionB) {
+        return sameSessionA - sameSessionB
+      }
 
     const statusA = statusRank(a.run.status)
     const statusB = statusRank(b.run.status)
@@ -52,6 +52,17 @@ export function selectReusableSebiRalphRun(
       return statusA - statusB
     }
 
-    return b.run.updatedAt.localeCompare(a.run.updatedAt)
-  })[0]!
+      return b.run.updatedAt.localeCompare(a.run.updatedAt)
+    })[0]!
+
+  const incompleteMatches = matches.filter(lookup => lookup.run.status !== 'completed')
+  if (incompleteMatches.length > 0) {
+    return sortMatches(incompleteMatches)
+  }
+
+  if (options.launchMode === 'loop') {
+    return sortMatches(matches)
+  }
+
+  return null
 }

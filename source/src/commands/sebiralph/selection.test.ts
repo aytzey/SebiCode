@@ -106,11 +106,12 @@ describe('selectReusableSebiRalphRun', () => {
     expect(selected?.run.id).toBe('current-session')
   })
 
-  test('does not reuse completed runs or runs from another mode', () => {
+  test('does not reuse a completed standard run or runs from another mode', () => {
     const lookups = [
       makeLookup({
         id: 'completed',
         status: 'completed',
+        launchMode: 'standard',
       }),
       makeLookup({
         id: 'standard-run',
@@ -125,5 +126,35 @@ describe('selectReusableSebiRalphRun', () => {
     })
 
     expect(selected).toBeNull()
+  })
+
+  test('reuses the latest completed loop run when the same loop task is invoked again', () => {
+    const lookups = [
+      makeLookup({
+        id: 'older-completed',
+        status: 'completed',
+        sessionId: 'other-session',
+        updatedAt: '2026-04-04T01:00:00.000Z',
+      }),
+      makeLookup({
+        id: 'latest-completed',
+        status: 'completed',
+        updatedAt: '2026-04-04T01:10:00.000Z',
+        phase: 'completed',
+        deploy: {
+          status: 'passed',
+          fixCycles: 1,
+          url: 'https://preview.test',
+        },
+      }),
+    ]
+
+    const selected = selectReusableSebiRalphRun(lookups, {
+      userTask: 'build feature',
+      launchMode: 'loop',
+      currentSessionId: 'session-1',
+    })
+
+    expect(selected?.run.id).toBe('latest-completed')
   })
 })

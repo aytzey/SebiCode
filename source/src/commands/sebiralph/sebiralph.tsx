@@ -31,6 +31,10 @@ function shouldAutoContinueRun(run: SebiRalphRunState): boolean {
   return run.status === 'active'
 }
 
+function shouldReopenCompletedLoopRun(run: SebiRalphRunState): boolean {
+  return run.launchMode === 'loop' && run.status === 'completed'
+}
+
 function formatRunSummary(run: SebiRalphRunState): string {
   const deployStatus =
     run.deploy.status === 'unknown' ? 'not observed yet' : run.deploy.status
@@ -69,7 +73,14 @@ function formatRunSummary(run: SebiRalphRunState): string {
   return lines.join('\n')
 }
 
-function buildResumePrompt(run: SebiRalphRunState): string {
+function buildResumePrompt(
+  run: SebiRalphRunState,
+  options?: {
+    reopenCompletedLoop?: boolean
+  },
+): string {
+  const reopenCompletedLoop = options?.reopenCompletedLoop === true
+
   return [
     `Continue SebiRalph run ${run.id}.`,
     `Original task: ${run.userTask}`,
@@ -83,12 +94,23 @@ function buildResumePrompt(run: SebiRalphRunState): string {
     run.launchMode === 'loop'
       ? 'Loop checkpoints are pre-approved: do not stop for config review or PRD approval unless deploy input is missing or the user explicitly interrupts.'
       : 'Config review and PRD approval still require explicit user confirmation.',
-    run.status === 'blocked'
+    reopenCompletedLoop
+      ? 'The user explicitly re-ran the same loop command after a completed run. Re-open the existing run instead of starting over from Phase 0.'
+      : run.status === 'blocked'
       ? 'The run is currently blocked. Attempt recovery automatically if the blocker looks transient; only stop again if a true external blocker remains.'
       : 'Resume the run from its latest durable point.',
+    run.integrationBranch
+      ? `Reuse integration branch ${run.integrationBranch} unless a new branch is strictly required for safety.`
+      : 'No prior integration branch has been observed yet.',
+    run.deploy.status === 'passed'
+      ? 'A deploy pass was already observed. Start from a fresh quality audit of the current integrated result, then refine, redeploy, and re-verify if gaps remain.'
+      : `Latest deploy status: ${run.deploy.status}.`,
+    run.deploy.url ? `Latest deploy URL: ${run.deploy.url}` : 'No deploy URL has been recorded yet.',
     'Use the existing transcript state; do not restart from Phase 0 unless the user explicitly asks to reconfigure the run.',
     `Keep emitting progress markers with run_id="${run.id}".`,
-    run.phase === 'completed'
+    reopenCompletedLoop
+      ? 'Treat the prior completion as a baseline snapshot and continue the loop with another high-bar refinement pass.'
+      : run.phase === 'completed'
       ? 'The run is already complete. Summarize only if the user asks.'
       : 'Resume from the last unfinished phase and continue the harness.',
   ].join('\n')
@@ -98,8 +120,12 @@ async function resumeRunSession(
   lookup: SebiRalphRunLookup,
   context: Parameters<LocalJSXCommandCall>[1],
   onDone: Parameters<LocalJSXCommandCall>[0],
+  options?: {
+    reopenCompletedLoop?: boolean
+  },
 ): Promise<void> {
-  const shouldQuery = shouldAutoContinueRun(lookup.run)
+  const reopenCompletedLoop = options?.reopenCompletedLoop === true
+  const shouldQuery = reopenCompletedLoop || shouldAutoContinueRun(lookup.run)
   if (!context.resume) {
     onDone(
       `${formatRunSummary(lookup.run)}\n\nThis environment cannot resume saved sessions.`,
@@ -124,7 +150,9 @@ async function resumeRunSession(
     onDone(undefined, {
       display: 'skip',
       shouldQuery,
-      metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,
+      metaMessages: shouldQuery
+        ? [buildResumePrompt(lookup.run, { reopenCompletedLoop })]
+        : undefined,
     })
   } catch (error) {
     onDone(
@@ -138,15 +166,21 @@ async function continueExistingRun(
   context: Parameters<LocalJSXCommandCall>[1],
   onDone: Parameters<LocalJSXCommandCall>[0],
 ): Promise<null> {
+  const reopenCompletedLoop = shouldReopenCompletedLoopRun(lookup.run)
   if (lookup.run.sessionId !== getSessionId()) {
-    await resumeRunSession(lookup, context, onDone)
+    await resumeRunSession(lookup, context, onDone, { reopenCompletedLoop })
     return null
   }
 
-  const shouldQuery = shouldAutoContinueRun(lookup.run)
-  onDone(`Reusing existing SebiRalph run for this task.\n\n${formatRunSummary(lookup.run)}`, {
+  const shouldQuery = reopenCompletedLoop || shouldAutoContinueRun(lookup.run)
+  const intro = reopenCompletedLoop
+    ? 'Reopening completed SebiRalph loop run for another refinement pass.'
+    : 'Reusing existing SebiRalph run for this task.'
+  onDone(`${intro}\n\n${formatRunSummary(lookup.run)}`, {
     shouldQuery,
-    metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,
+    metaMessages: shouldQuery
+      ? [buildResumePrompt(lookup.run, { reopenCompletedLoop })]
+      : undefined,
   })
   return null
 }

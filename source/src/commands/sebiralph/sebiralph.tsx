@@ -32,6 +32,18 @@ function formatRunSummary(run: SebiRalphRunState): string {
     lines.push(`Integration branch: ${run.integrationBranch}`)
   }
 
+  if (run.deploy.target) {
+    lines.push(`Deploy target: ${run.deploy.target}`)
+  }
+
+  if (run.deploy.url) {
+    lines.push(`Deploy URL: ${run.deploy.url}`)
+  }
+
+  if (run.lastError) {
+    lines.push(`Last error: ${run.lastError}`)
+  }
+
   return lines.join('\n')
 }
 
@@ -87,7 +99,7 @@ async function resumeRunSession(
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   const trimmed = args.trim()
 
-  if (!trimmed || trimmed === 'resume') {
+  if (!trimmed) {
     const lookup = await findSebiRalphRun()
     if (!lookup) {
       onDone('No SebiRalph runs found. Start one with /sebiralph <task>.')

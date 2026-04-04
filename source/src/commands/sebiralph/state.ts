@@ -9,17 +9,14 @@ import type {
 import type { LogOption } from '../../types/logs.js'
 import { getLastSessionLog } from '../../utils/sessionStorage.js'
 import { getProjectDir } from '../../utils/sessionStoragePortable.js'
+import { deriveRunHydrationFromTranscript } from './markers.js'
 import type {
   SebiRalphExecutionPolicy,
-  SebiRalphPhase,
   SebiRalphRunLookup,
   SebiRalphRunState,
-  SebiRalphRunStatus,
 } from './types.js'
 
 const RUNS_DIRNAME = 'sebiralph-runs'
-const RUN_PROGRESS_RE =
-  /<sebiralph-progress\b[^>]*phase="([^"]+)"[^>]*status="([^"]+)"[^>]*\/?>/gi
 
 function getRunsDir(projectPath = getOriginalCwd()): string {
   return join(getProjectDir(projectPath), RUNS_DIRNAME)
@@ -67,38 +64,11 @@ function getMessageText(message: LogOption['messages'][number]): string {
     .join('\n')
 }
 
-function parsePhase(raw: string): SebiRalphPhase | null {
-  switch (raw) {
-    case 'config_review':
-    case 'explore':
-    case 'plan':
-    case 'evaluate':
-    case 'prd_approval':
-    case 'wave_execution':
-    case 'gate_validation':
-    case 'review_fix':
-    case 'integration_merge':
-    case 'deploy_verify':
-    case 'completed':
-    case 'blocked':
-      return raw
-    default:
-      return null
-  }
-}
-
-function parseStatus(raw: string): SebiRalphRunStatus | null {
-  switch (raw) {
-    case 'entered':
-    case 'completed':
-      return raw === 'completed' ? 'completed' : 'active'
-    case 'awaiting_user':
-      return 'awaiting_user'
-    case 'blocked':
-      return 'blocked'
-    default:
-      return null
-  }
+function isApiErrorMessage(message: LogOption['messages'][number]): boolean {
+  return Boolean(
+    (message as { isApiErrorMessage?: boolean }).isApiErrorMessage ||
+      (message as { error?: string }).error,
+  )
 }
 
 function cloneRun(run: SebiRalphRunState): SebiRalphRunState {
@@ -193,65 +163,53 @@ export async function hydrateSebiRalphRun(
 
   const next = cloneRun(run)
   const assistantMessages = log.messages.filter(message => message.type === 'assistant')
-  let lastProgress: { phase: SebiRalphPhase; status: SebiRalphRunStatus; raw: string } | null =
-    null
+  const hydration = deriveRunHydrationFromTranscript({
+    runId: run.id,
+    messages: assistantMessages.map(message => ({
+      text: getMessageText(message),
+      isApiError: isApiErrorMessage(message),
+    })),
+    modifiedAt: log.modified.toISOString(),
+  })
 
-  for (const message of assistantMessages) {
-    const text = getMessageText(message)
-    if (!text) continue
+  if (hydration.updatedAt > next.updatedAt) {
+    next.updatedAt = hydration.updatedAt
+  }
 
-    RUN_PROGRESS_RE.lastIndex = 0
-    for (const match of text.matchAll(RUN_PROGRESS_RE)) {
-      const phase = parsePhase(match[1] ?? '')
-      const status = parseStatus(match[2] ?? '')
-      if (!phase || !status) continue
-      lastProgress = { phase, status, raw: match[0] }
+  if (hydration.phase) {
+    next.phase = hydration.phase
+  }
+
+  if (hydration.status) {
+    next.status = hydration.status
+  }
+
+  if (hydration.lastProgressMarker) {
+    next.lastProgressMarker = hydration.lastProgressMarker
+  }
+
+  if (hydration.completedAt) {
+    next.completedAt ??= hydration.completedAt
+  }
+
+  if (hydration.integrationBranch) {
+    next.integrationBranch = hydration.integrationBranch
+  }
+
+  if (hydration.lastError !== undefined) {
+    if (hydration.lastError) {
+      next.lastError = hydration.lastError
+    } else {
+      delete next.lastError
     }
   }
 
-  if (log.modified.toISOString() > next.updatedAt) {
-    next.updatedAt = log.modified.toISOString()
-  }
-
-  if (lastProgress) {
-    next.phase = lastProgress.phase
-    next.status = lastProgress.status
-    next.lastProgressMarker = lastProgress.raw
-    if (lastProgress.phase === 'completed' || lastProgress.status === 'completed') {
-      next.phase = 'completed'
-      next.status = 'completed'
-      next.completedAt ??= log.modified.toISOString()
+  if (hydration.deploy) {
+    const nextDeploy = { ...next.deploy, ...hydration.deploy }
+    if (hydration.deploy.status === 'blocked' && next.deploy.status === 'passed') {
+      nextDeploy.status = 'passed'
     }
-    if (lastProgress.phase === 'blocked' || lastProgress.status === 'blocked') {
-      next.phase = 'blocked'
-      next.status = 'blocked'
-    }
-  }
-
-  const assistantText = assistantMessages.map(getMessageText).join('\n\n')
-  if (/SebiRalph complete\./i.test(assistantText)) {
-    next.phase = 'completed'
-    next.status = 'completed'
-    next.completedAt ??= log.modified.toISOString()
-  }
-
-  const deployVerdict = assistantText.match(/Deploy verification:\s*(PASS|FAIL|BLOCKED)/i)
-  if (deployVerdict?.[1]) {
-    const verdict = deployVerdict[1].toUpperCase()
-    next.deploy.status =
-      verdict === 'PASS'
-        ? 'passed'
-        : verdict === 'FAIL'
-          ? 'failed'
-          : 'blocked'
-    next.deploy.updatedAt = log.modified.toISOString()
-  }
-
-  const integrationBranchMatch = assistantText.match(
-    /Integration branch:\s*`([^`]+)`/i,
-  )
-  if (integrationBranchMatch?.[1]) {
-    next.integrationBranch = integrationBranchMatch[1]
+    next.deploy = nextDeploy
   }
 
   if (JSON.stringify(next) !== JSON.stringify(run)) {

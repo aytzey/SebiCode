@@ -504,6 +504,9 @@ function phaseMerge(workflow: RalphWorkflowDefaults): string {
 git branch ralph/integration-$(date +%s | cut -c1-8)
 \`\`\`
 
+Immediately after choosing the branch name, emit the integration marker using the same \`run_id\` from the Progress Marker Protocol:
+\`<sebiralph-integration run_id="{current_run_id}" branch="{integration_branch}" />\`
+
 ### Step 2: Merge each approved task
 For each APPROVED task (skip GATE_FAILED and NEEDS_MANUAL_REVIEW):
 \`\`\`bash
@@ -520,6 +523,9 @@ When TDD is ON, deployment is REQUIRED unless the user explicitly disabled TDD.
 - Use \`deliveryContext.deployCommand\` from Phase 1
 - If \`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`, stop and ask the user instead of guessing
 - Record the deploy target, commit SHA, and any preview/staging URL returned by the deploy command
+- Emit a deploy marker for each attempt:
+  - Before running deploy: \`<sebiralph-deploy run_id="{current_run_id}" status="pending" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />\`
+  - On deploy failure/blocker: \`<sebiralph-deploy run_id="{current_run_id}" status="failed|blocked" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />\`
 
 ### Step 4: Runtime verification of the deployed change
 
@@ -539,6 +545,9 @@ Minimum requirement:
 - Run the documented smoke/e2e/runtime command or hit the live surface directly
 - Capture the evidence
 - Run at least one adversarial probe
+- After the verdict is known, emit:
+  - Pass: \`<sebiralph-deploy run_id="{current_run_id}" status="passed" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />\`
+  - Fail/block: \`<sebiralph-deploy run_id="{current_run_id}" status="failed|blocked" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />\`
 
 ### Step 5: Deploy fix loop
 
@@ -600,11 +609,13 @@ Use this exact shape:
 - Phase completed: <sebiralph-progress run_id="${runtime.runId}" phase="{phase_id}" status="completed" />
 - Final success: <sebiralph-progress run_id="${runtime.runId}" phase="completed" status="completed" />
 - Hard blocker: <sebiralph-progress run_id="${runtime.runId}" phase="blocked" status="blocked" />
+- Integration branch selected: <sebiralph-integration run_id="${runtime.runId}" branch="{integration_branch}" />
+- Deploy status update: <sebiralph-deploy run_id="${runtime.runId}" status="{pending|passed|failed|blocked}" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />
 
 Allowed phase ids:
 config_review, explore, plan, evaluate, prd_approval, wave_execution, gate_validation, review_fix, integration_merge, deploy_verify, completed, blocked
 
-Keep the markers short and exact. They are used for harness durability and resume.`
+Keep the markers short and exact. Use empty strings for unknown target/url values, and do not place literal double quotes inside marker attribute values. They are used for harness durability and resume.`
 }
 
 export function buildHarnessPrompt(

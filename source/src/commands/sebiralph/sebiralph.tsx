@@ -38,6 +38,10 @@ function shouldReopenCompletedLoopRun(run: SebiRalphRunState): boolean {
 function formatRunSummary(run: SebiRalphRunState): string {
   const deployStatus =
     run.deploy.status === 'unknown' ? 'not observed yet' : run.deploy.status
+  const remainingQualityLoops = Math.max(
+    run.workflow.maxQualityLoops - run.qualityLoopsCompleted,
+    0,
+  )
   const lines = [
     `SebiRalph run ${run.id.slice(0, 8)}`,
     `Mode: ${run.launchMode === 'loop' ? 'loop' : 'standard'}`,
@@ -52,6 +56,11 @@ function formatRunSummary(run: SebiRalphRunState): string {
 
   if (run.launchMode === 'loop') {
     lines.push(`Quality loops max: ${run.workflow.maxQualityLoops}`)
+    lines.push(`Quality loops completed: ${run.qualityLoopsCompleted}`)
+    lines.push(`Quality loops remaining: ${remainingQualityLoops}`)
+    if (run.lastQualityVerdict) {
+      lines.push(`Last quality verdict: ${run.lastQualityVerdict}`)
+    }
   }
 
   if (run.integrationBranch) {
@@ -92,6 +101,12 @@ function buildResumePrompt(
       ? `Loop mode is ON with up to ${run.workflow.maxQualityLoops} post-deploy refinement loops.`
       : 'Loop mode is OFF for this run.',
     run.launchMode === 'loop'
+      ? `Observed quality loop usage so far: ${run.qualityLoopsCompleted}/${run.workflow.maxQualityLoops}.`
+      : 'No quality loop budget applies to this run.',
+    run.launchMode === 'loop' && run.lastQualityVerdict
+      ? `Latest recorded quality verdict: ${run.lastQualityVerdict}.`
+      : 'No quality verdict has been recorded yet.',
+    run.launchMode === 'loop'
       ? 'Loop checkpoints are pre-approved: do not stop for config review or PRD approval unless deploy input is missing or the user explicitly interrupts.'
       : 'Config review and PRD approval still require explicit user confirmation.',
     reopenCompletedLoop
@@ -106,6 +121,9 @@ function buildResumePrompt(
       ? 'A deploy pass was already observed. Start from a fresh quality audit of the current integrated result, then refine, redeploy, and re-verify if gaps remain.'
       : `Latest deploy status: ${run.deploy.status}.`,
     run.deploy.url ? `Latest deploy URL: ${run.deploy.url}` : 'No deploy URL has been recorded yet.',
+    run.launchMode === 'loop' && run.qualityLoopsCompleted >= run.workflow.maxQualityLoops
+      ? 'The recorded loop budget is exhausted. Only stop if the remaining gaps are truly external blockers; otherwise justify any extra refinement round explicitly.'
+      : 'Stay within the configured quality-loop budget unless a new user instruction expands it.',
     'Use the existing transcript state; do not restart from Phase 0 unless the user explicitly asks to reconfigure the run.',
     `Keep emitting progress markers with run_id="${run.id}".`,
     reopenCompletedLoop

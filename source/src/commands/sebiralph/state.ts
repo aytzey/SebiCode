@@ -90,6 +90,7 @@ async function loadRunFile(filePath: string): Promise<SebiRalphRunState | null> 
     const parsed = JSON.parse(raw) as SebiRalphRunState
     parsed.workflow.loopMode ??= false
     parsed.workflow.maxQualityLoops ??= 0
+    parsed.qualityLoopsCompleted ??= 0
     if (!parsed.launchMode) {
       parsed.launchMode = parsed.workflow.loopMode ? 'loop' : 'standard'
     }
@@ -147,6 +148,7 @@ export async function createSebiRalphRun(params: {
       status: 'unknown',
       fixCycles: 0,
     },
+    qualityLoopsCompleted: 0,
   }
   return saveSebiRalphRun(run)
 }
@@ -227,6 +229,14 @@ export async function hydrateSebiRalphRun(
       nextDeploy.status = 'passed'
     }
     next.deploy = nextDeploy
+  }
+
+  if (hydration.qualityLoopsCompleted !== undefined) {
+    next.qualityLoopsCompleted = hydration.qualityLoopsCompleted
+  }
+
+  if (hydration.lastQualityVerdict !== undefined) {
+    next.lastQualityVerdict = hydration.lastQualityVerdict
   }
 
   if (JSON.stringify(next) !== JSON.stringify(run)) {

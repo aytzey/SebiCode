@@ -587,11 +587,15 @@ Agent({
 \`\`\`
 
 Handling:
-1. If \`QUALITY_VERDICT: SHIP_IT\`, proceed to cleanup and final report
-2. If \`QUALITY_VERDICT: REFINE\`, create a focused refinement mini-plan with at most 3 tasks, then return to Phase 5 → 6 → 7 → 8 using the same run and integration branch
-3. Re-deploy and re-verify after each refinement round
-4. Keep looping until \`SHIP_IT\` or you hit **${workflow.maxQualityLoops} refinement loops**
-5. If the loop limit is hit, stop and report what remains instead of claiming perfection`
+1. Before recording the verdict, compute the current refinement iteration number and emit a loop marker:
+   - Refine: \`<sebiralph-loop run_id="{current_run_id}" iteration="{quality_iteration}" verdict="refine" />\`
+   - Ship it: \`<sebiralph-loop run_id="{current_run_id}" iteration="{quality_iteration}" verdict="ship_it" />\`
+   - Limit reached: \`<sebiralph-loop run_id="{current_run_id}" iteration="{quality_iteration}" verdict="limit_reached" />\`
+2. If \`QUALITY_VERDICT: SHIP_IT\`, proceed to cleanup and final report
+3. If \`QUALITY_VERDICT: REFINE\`, create a focused refinement mini-plan with at most 3 tasks, then return to Phase 5 → 6 → 7 → 8 using the same run and integration branch
+4. Re-deploy and re-verify after each refinement round
+5. Keep looping until \`SHIP_IT\` or you hit **${workflow.maxQualityLoops} refinement loops**
+6. If the loop limit is hit, stop and report what remains instead of claiming perfection`
   : `If the user explicitly asks for more polish after a successful deploy, you may run one extra critique pass. Otherwise continue to cleanup.`}
 
 ### Step 6: Cleanup
@@ -642,6 +646,7 @@ Use this exact shape:
 - Hard blocker: <sebiralph-progress run_id="${runtime.runId}" phase="blocked" status="blocked" />
 - Integration branch selected: <sebiralph-integration run_id="${runtime.runId}" branch="{integration_branch}" />
 - Deploy status update: <sebiralph-deploy run_id="${runtime.runId}" status="{pending|passed|failed|blocked}" target="{deploy_target_or_blank}" url="{deploy_url_or_blank}" />
+- Quality loop verdict: <sebiralph-loop run_id="${runtime.runId}" iteration="{quality_iteration}" verdict="{refine|ship_it|limit_reached}" />
 
 Allowed phase ids:
 config_review, explore, plan, evaluate, prd_approval, wave_execution, gate_validation, review_fix, integration_merge, deploy_verify, completed, blocked

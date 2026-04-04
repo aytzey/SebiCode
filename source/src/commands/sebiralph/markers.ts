@@ -1,6 +1,7 @@
 import type {
   SebiRalphDeployRecord,
   SebiRalphPhase,
+  SebiRalphQualityVerdict,
   SebiRalphRunStatus,
 } from './types.js'
 
@@ -18,6 +19,8 @@ export type SebiRalphTranscriptHydration = {
   integrationBranch?: string
   lastError?: string | null
   deploy?: Partial<SebiRalphDeployRecord>
+  qualityLoopsCompleted?: number
+  lastQualityVerdict?: SebiRalphQualityVerdict
 }
 
 type ScopedEvent<T> = T & {
@@ -38,6 +41,11 @@ type DeployEvent = ScopedEvent<{
   status: SebiRalphDeployRecord['status']
   target?: string
   url?: string
+}>
+
+type LoopEvent = ScopedEvent<{
+  iteration: number
+  verdict: SebiRalphQualityVerdict
 }>
 
 type ApiErrorEvent = {
@@ -112,6 +120,21 @@ function parseMarkerAttrs(raw: string): Record<string, string> {
   return attrs
 }
 
+function parseLoopVerdict(raw: string | undefined): SebiRalphQualityVerdict | null {
+  switch (raw?.toLowerCase()) {
+    case 'refine':
+      return 'refine'
+    case 'ship_it':
+    case 'shipit':
+      return 'ship_it'
+    case 'limit_reached':
+    case 'limit':
+      return 'limit_reached'
+    default:
+      return null
+  }
+}
+
 function getScopedMarkers(
   runId: string,
   messages: SebiRalphTranscriptMessage[],
@@ -119,6 +142,7 @@ function getScopedMarkers(
   progress: ProgressEvent | null
   integration: IntegrationEvent | null
   deploy: DeployEvent | null
+  loop: LoopEvent | null
   apiError: ApiErrorEvent | null
   seenRunIds: Set<string>
   assistantText: string
@@ -126,6 +150,7 @@ function getScopedMarkers(
   let progress: ProgressEvent | null = null
   let integration: IntegrationEvent | null = null
   let deploy: DeployEvent | null = null
+  let loop: LoopEvent | null = null
   let apiError: ApiErrorEvent | null = null
   const seenRunIds = new Set<string>()
   const assistantTextParts: string[] = []
@@ -196,6 +221,19 @@ function getScopedMarkers(
           raw,
           order,
         }
+        continue
+      }
+
+      if (name === 'sebiralph-loop') {
+        const verdict = parseLoopVerdict(attrs.verdict)
+        const iteration = Number.parseInt(attrs.iteration ?? '', 10)
+        if (!verdict || !Number.isFinite(iteration) || iteration < 1) continue
+        loop = {
+          iteration,
+          verdict,
+          raw,
+          order,
+        }
       }
     }
   }
@@ -204,6 +242,7 @@ function getScopedMarkers(
     progress,
     integration,
     deploy,
+    loop,
     apiError,
     seenRunIds,
     assistantText: assistantTextParts.join('\n\n'),
@@ -219,7 +258,15 @@ export function deriveRunHydrationFromTranscript(params: {
   const next: SebiRalphTranscriptHydration = {
     updatedAt: modifiedAt,
   }
-  const { progress, integration, deploy, apiError, seenRunIds, assistantText } =
+  const {
+    progress,
+    integration,
+    deploy,
+    loop,
+    apiError,
+    seenRunIds,
+    assistantText,
+  } =
     getScopedMarkers(runId, messages)
 
   if (progress) {
@@ -248,6 +295,11 @@ export function deriveRunHydrationFromTranscript(params: {
     if (deploy.status === 'passed') {
       next.lastError = null
     }
+  }
+
+  if (loop) {
+    next.qualityLoopsCompleted = loop.iteration
+    next.lastQualityVerdict = loop.verdict
   }
 
   const allowLegacySummaryFallback = seenRunIds.size <= 1
@@ -289,6 +341,7 @@ export function deriveRunHydrationFromTranscript(params: {
     progress?.order ?? -1,
     integration?.order ?? -1,
     deploy?.order ?? -1,
+    loop?.order ?? -1,
   )
 
   if (

@@ -17,6 +17,7 @@ describe('buildHarnessPrompt', () => {
     expect(prompt).toContain(`${LOOP_WORKFLOW.maxQualityLoops} refinement loops`)
     expect(prompt).toContain('PRE-APPROVED')
     expect(prompt).toContain('Treat \'good enough\' as a REFINE verdict.')
+    expect(prompt).toContain('<sebiralph-loop run_id="run-loop" iteration="{quality_iteration}" verdict="{refine|ship_it|limit_reached}" />')
   })
 
   test('keeps loop mode disabled in the standard workflow', () => {

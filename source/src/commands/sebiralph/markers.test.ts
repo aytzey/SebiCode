@@ -115,4 +115,28 @@ describe('deriveRunHydrationFromTranscript', () => {
     expect(hydration.integrationBranch).toBe('ralph/integration-legacy')
     expect(hydration.deploy?.status).toBe('passed')
   })
+
+  test('tracks the latest quality loop verdict and iteration count', () => {
+    const hydration = deriveRunHydrationFromTranscript({
+      runId: 'run-a',
+      modifiedAt: '2026-04-04T01:20:00.000Z',
+      messages: [
+        {
+          text:
+            '<sebiralph-loop run_id="run-a" iteration="1" verdict="refine" />\n' +
+            '<sebiralph-deploy run_id="run-a" status="passed" target="preview" url="https://preview-1.test" />',
+        },
+        {
+          text:
+            '<sebiralph-loop run_id="run-a" iteration="2" verdict="ship_it" />\n' +
+            '<sebiralph-progress run_id="run-a" phase="completed" status="completed" />',
+        },
+      ],
+    })
+
+    expect(hydration.qualityLoopsCompleted).toBe(2)
+    expect(hydration.lastQualityVerdict).toBe('ship_it')
+    expect(hydration.phase).toBe('completed')
+    expect(hydration.status).toBe('completed')
+  })
 })

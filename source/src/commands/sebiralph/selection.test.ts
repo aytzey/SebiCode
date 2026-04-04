@@ -49,6 +49,7 @@ function makeLookup(
         status: 'unknown',
         fixCycles: 0,
       },
+      qualityLoopsCompleted: 0,
       ...overrides,
     },
   }

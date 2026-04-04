@@ -69,6 +69,8 @@ export type SebiRalphExecutionPolicy = {
   maxQualityLoops: number
 }
 
+export type SebiRalphQualityVerdict = 'refine' | 'ship_it' | 'limit_reached'
+
 export type SebiRalphRunState = {
   id: string
   sessionId: string
@@ -87,6 +89,8 @@ export type SebiRalphRunState = {
   taskRecords: SebiRalphTaskRecord[]
   waveRecords: SebiRalphWaveRecord[]
   deploy: SebiRalphDeployRecord
+  qualityLoopsCompleted: number
+  lastQualityVerdict?: SebiRalphQualityVerdict
   lastProgressMarker?: string
   lastError?: string
   completedAt?: string

@@ -12,7 +12,11 @@ import {
   getEffectiveQualityLoopBudget,
   getRemainingQualityLoopBudget,
 } from './budget.js'
-import { reopenCompletedLoopRun } from './reopen.js'
+import {
+  grantManualLoopExtension,
+  shouldGrantManualLoopExtension,
+  shouldReactivateLoopRun,
+} from './reopen.js'
 import {
   createSebiRalphRun,
   findSebiRalphRun,
@@ -35,10 +39,6 @@ function shouldAutoContinueRun(run: SebiRalphRunState): boolean {
   }
 
   return run.status === 'active'
-}
-
-function shouldReopenCompletedLoopRun(run: SebiRalphRunState): boolean {
-  return run.launchMode === 'loop' && run.status === 'completed'
 }
 
 function formatRunSummary(run: SebiRalphRunState): string {
@@ -91,10 +91,12 @@ function formatRunSummary(run: SebiRalphRunState): string {
 function buildResumePrompt(
   run: SebiRalphRunState,
   options?: {
-    reopenCompletedLoop?: boolean
+    manualLoopExtension?: boolean
+    reactivatedLoop?: boolean
   },
 ): string {
-  const reopenCompletedLoop = options?.reopenCompletedLoop === true
+  const manualLoopExtension = options?.manualLoopExtension === true
+  const reactivatedLoop = options?.reactivatedLoop === true
   const effectiveQualityLoopBudget = getEffectiveQualityLoopBudget(run)
 
   return [
@@ -119,8 +121,10 @@ function buildResumePrompt(
     run.launchMode === 'loop'
       ? 'Loop checkpoints are pre-approved: do not stop for config review or PRD approval unless deploy input is missing or the user explicitly interrupts.'
       : 'Config review and PRD approval still require explicit user confirmation.',
-    reopenCompletedLoop
-      ? 'The user explicitly re-ran the same loop command after a completed run. Re-open the existing run instead of starting over from Phase 0, and treat this invocation as one newly granted refinement slot.'
+    manualLoopExtension && reactivatedLoop
+      ? 'The user explicitly re-ran the same loop command after the previous loop stopped. Re-activate the existing run instead of starting over from Phase 0, and treat this invocation as one newly granted refinement slot.'
+      : manualLoopExtension
+      ? 'The user explicitly re-ran the same loop command. Treat this invocation as one newly granted refinement slot on the current run.'
       : run.status === 'blocked'
       ? 'The run is currently blocked. Attempt recovery automatically if the blocker looks transient; only stop again if a true external blocker remains.'
       : 'Resume the run from its latest durable point.',
@@ -137,7 +141,7 @@ function buildResumePrompt(
       : 'Stay within the current effective quality-loop budget unless a new user instruction expands it again.',
     'Use the existing transcript state; do not restart from Phase 0 unless the user explicitly asks to reconfigure the run.',
     `Keep emitting progress markers with run_id="${run.id}".`,
-    reopenCompletedLoop
+    reactivatedLoop
       ? 'Treat the prior completion as a baseline snapshot and continue the loop with another high-bar refinement pass.'
       : run.phase === 'completed'
       ? 'The run is already complete. Summarize only if the user asks.'
@@ -148,7 +152,7 @@ function buildResumePrompt(
 async function extendCompletedLoopRun(
   lookup: SebiRalphRunLookup,
 ): Promise<SebiRalphRunLookup> {
-  const nextRun = reopenCompletedLoopRun(lookup.run)
+  const nextRun = grantManualLoopExtension(lookup.run)
   await saveSebiRalphRun(nextRun)
   return {
     ...lookup,
@@ -161,11 +165,13 @@ async function resumeRunSession(
   context: Parameters<LocalJSXCommandCall>[1],
   onDone: Parameters<LocalJSXCommandCall>[0],
   options?: {
-    reopenCompletedLoop?: boolean
+    manualLoopExtension?: boolean
+    reactivatedLoop?: boolean
   },
 ): Promise<void> {
-  const reopenCompletedLoop = options?.reopenCompletedLoop === true
-  const shouldQuery = reopenCompletedLoop || shouldAutoContinueRun(lookup.run)
+  const manualLoopExtension = options?.manualLoopExtension === true
+  const reactivatedLoop = options?.reactivatedLoop === true
+  const shouldQuery = manualLoopExtension || shouldAutoContinueRun(lookup.run)
   if (!context.resume) {
     onDone(
       `${formatRunSummary(lookup.run)}\n\nThis environment cannot resume saved sessions.`,
@@ -191,7 +197,7 @@ async function resumeRunSession(
       display: 'skip',
       shouldQuery,
       metaMessages: shouldQuery
-        ? [buildResumePrompt(lookup.run, { reopenCompletedLoop })]
+        ? [buildResumePrompt(lookup.run, { manualLoopExtension, reactivatedLoop })]
         : undefined,
     })
   } catch (error) {
@@ -206,24 +212,36 @@ async function continueExistingRun(
   context: Parameters<LocalJSXCommandCall>[1],
   onDone: Parameters<LocalJSXCommandCall>[0],
 ): Promise<null> {
-  const reopenCompletedLoop = shouldReopenCompletedLoopRun(lookup.run)
-  const nextLookup = reopenCompletedLoop
+  const manualLoopExtension = shouldGrantManualLoopExtension(lookup.run)
+  const reactivatedLoop =
+    manualLoopExtension && shouldReactivateLoopRun(lookup.run)
+  const nextLookup = manualLoopExtension
     ? await extendCompletedLoopRun(lookup)
     : lookup
 
   if (nextLookup.run.sessionId !== getSessionId()) {
-    await resumeRunSession(nextLookup, context, onDone, { reopenCompletedLoop })
+    await resumeRunSession(nextLookup, context, onDone, {
+      manualLoopExtension,
+      reactivatedLoop,
+    })
     return null
   }
 
-  const shouldQuery = reopenCompletedLoop || shouldAutoContinueRun(nextLookup.run)
-  const intro = reopenCompletedLoop
-    ? 'Reopening completed SebiRalph loop run with one additional refinement budget slot.'
+  const shouldQuery = manualLoopExtension || shouldAutoContinueRun(nextLookup.run)
+  const intro = reactivatedLoop
+    ? 'Reactivating the SebiRalph loop run with one additional refinement budget slot.'
+    : manualLoopExtension
+    ? 'Granting the SebiRalph loop run one additional refinement budget slot.'
     : 'Reusing existing SebiRalph run for this task.'
   onDone(`${intro}\n\n${formatRunSummary(nextLookup.run)}`, {
     shouldQuery,
     metaMessages: shouldQuery
-      ? [buildResumePrompt(nextLookup.run, { reopenCompletedLoop })]
+      ? [
+          buildResumePrompt(nextLookup.run, {
+            manualLoopExtension,
+            reactivatedLoop,
+          }),
+        ]
       : undefined,
   })
   return null

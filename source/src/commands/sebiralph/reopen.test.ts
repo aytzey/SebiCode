@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { reopenCompletedLoopRun, shouldKeepLoopRunOpen } from './reopen.js'
+import {
+  grantManualLoopExtension,
+  shouldGrantManualLoopExtension,
+  shouldKeepLoopRunOpen,
+} from './reopen.js'
 import type { SebiRalphRunState } from './types.js'
 
 function makeRun(
@@ -52,8 +56,8 @@ function makeRun(
 }
 
 describe('sebiralph reopen helpers', () => {
-  test('reopenCompletedLoopRun marks the run active and increments the extension budget', () => {
-    const reopened = reopenCompletedLoopRun(
+  test('grantManualLoopExtension reactivates a completed run and increments the extension budget', () => {
+    const reopened = grantManualLoopExtension(
       makeRun(),
       '2026-04-04T01:05:00.000Z',
     )
@@ -63,6 +67,50 @@ describe('sebiralph reopen helpers', () => {
     expect(reopened.qualityLoopExtensions).toBe(1)
     expect(reopened.reopenRequestedAt).toBe('2026-04-04T01:05:00.000Z')
     expect(reopened.completedAt).toBeUndefined()
+  })
+
+  test('grantManualLoopExtension reactivates a loop stopped by quality limit', () => {
+    const reopened = grantManualLoopExtension(
+      makeRun({
+        phase: 'blocked',
+        status: 'blocked',
+        lastQualityVerdict: 'limit_reached',
+        completedAt: undefined,
+      }),
+      '2026-04-04T01:05:00.000Z',
+    )
+
+    expect(reopened.phase).toBe('deploy_verify')
+    expect(reopened.status).toBe('active')
+    expect(reopened.qualityLoopExtensions).toBe(1)
+  })
+
+  test('shouldGrantManualLoopExtension is true for completed or limit-reached loop runs', () => {
+    expect(shouldGrantManualLoopExtension(makeRun())).toBe(true)
+    expect(
+      shouldGrantManualLoopExtension(
+        makeRun({
+          phase: 'blocked',
+          status: 'blocked',
+          lastQualityVerdict: 'limit_reached',
+          completedAt: undefined,
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  test('shouldGrantManualLoopExtension is true when the effective quality budget is exhausted', () => {
+    expect(
+      shouldGrantManualLoopExtension(
+        makeRun({
+          phase: 'deploy_verify',
+          status: 'active',
+          lastQualityVerdict: 'refine',
+          qualityLoopsCompleted: 3,
+          completedAt: undefined,
+        }),
+      ),
+    ).toBe(true)
   })
 
   test('shouldKeepLoopRunOpen keeps a loop run active when reopen is newer than completion', () => {
@@ -82,5 +130,16 @@ describe('sebiralph reopen helpers', () => {
 
     expect(shouldKeepLoopRunOpen(run)).toBe(false)
   })
-})
 
+  test('shouldKeepLoopRunOpen preserves a manually extended quality-limit block without external errors', () => {
+    const run = makeRun({
+      phase: 'blocked',
+      status: 'blocked',
+      lastQualityVerdict: 'limit_reached',
+      completedAt: undefined,
+      reopenRequestedAt: '2026-04-04T01:05:00.000Z',
+    })
+
+    expect(shouldKeepLoopRunOpen(run)).toBe(true)
+  })
+})

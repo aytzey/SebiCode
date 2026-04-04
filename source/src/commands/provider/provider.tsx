@@ -1,32 +1,41 @@
 import * as React from 'react'
+import { setMainLoopModelOverride } from '../../bootstrap/state.js'
+import { useSetAppState } from '../../state/AppState.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import { getAPIProvider, setProviderOverride } from '../../utils/model/providers.js'
-import { getDefaultMainLoopModelSetting, getPublicModelDisplayName } from '../../utils/model/model.js'
+import {
+  getDefaultMainLoopModelSetting,
+  getPublicModelDisplayName,
+  parseUserSpecifiedModel,
+} from '../../utils/model/model.js'
 import { clearOAuthTokenCache } from '../../utils/auth.js'
 
 type ProviderResult = { message: string }
 
-function switchProvider(target: 'claude' | 'codex'): ProviderResult {
+function switchProvider(
+  target: 'claude' | 'codex',
+  setAppState: ReturnType<typeof useSetAppState>,
+): ProviderResult {
   const current = getAPIProvider()
+  const nextProvider = target === 'codex' ? 'codex' : 'firstParty'
+  const changed = current !== nextProvider
 
-  if (target === 'codex') {
-    if (current === 'codex') {
-      const model = getDefaultMainLoopModelSetting()
-      return { message: `Already on Codex (${getPublicModelDisplayName(model) || model})` }
-    }
-    setProviderOverride('codex')
-    clearOAuthTokenCache()
-    const model = getDefaultMainLoopModelSetting()
-    return { message: `Switched to **Codex**. Model: ${getPublicModelDisplayName(model) || model}` }
-  } else {
-    if (current === 'firstParty') {
-      const model = getDefaultMainLoopModelSetting()
-      return { message: `Already on Claude (${getPublicModelDisplayName(model) || model})` }
-    }
-    setProviderOverride('firstParty')
-    clearOAuthTokenCache()
-    const model = getDefaultMainLoopModelSetting()
-    return { message: `Switched to **Claude**. Model: ${getPublicModelDisplayName(model) || model}` }
+  setProviderOverride(nextProvider)
+  clearOAuthTokenCache()
+
+  const model = getDefaultMainLoopModelSetting()
+  const resolvedModel = parseUserSpecifiedModel(model)
+  setMainLoopModelOverride(resolvedModel)
+  setAppState(prev =>
+    prev.mainLoopModelForSession === resolvedModel
+      ? prev
+      : { ...prev, mainLoopModelForSession: resolvedModel },
+  )
+
+  const providerLabel = target === 'codex' ? 'Codex' : 'Claude'
+  const displayName = getPublicModelDisplayName(model) || model
+  return {
+    message: `${changed ? 'Switched to' : 'Using'} **${providerLabel}**. Model: ${displayName}`,
   }
 }
 
@@ -46,6 +55,7 @@ export default function ProviderCommand({
   onDone: LocalJSXCommandOnDone
 }) {
   const trimmed = args.trim().toLowerCase()
+  const setAppState = useSetAppState()
 
   React.useEffect(() => {
     let result: ProviderResult
@@ -53,9 +63,9 @@ export default function ProviderCommand({
     if (!trimmed) {
       result = showCurrentProvider()
     } else if (trimmed === 'claude' || trimmed === 'anthropic') {
-      result = switchProvider('claude')
+      result = switchProvider('claude', setAppState)
     } else if (trimmed === 'codex' || trimmed === 'openai' || trimmed === 'gpt') {
-      result = switchProvider('codex')
+      result = switchProvider('codex', setAppState)
     } else if (trimmed === 'help' || trimmed === '-h') {
       result = { message: '/provider [claude|codex] — switch API provider mid-session' }
     } else {
@@ -71,7 +81,7 @@ export default function ProviderCommand({
         timestamp: new Date().toISOString(),
       }],
     })
-  }, [])
+  }, [trimmed, onDone, setAppState])
 
   return null
 }

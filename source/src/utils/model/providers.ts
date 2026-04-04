@@ -37,19 +37,25 @@ export function getProviderOverride(): APIProvider | null {
 }
 
 export function getAPIProvider(): APIProvider {
-  // File-based override takes precedence (set by /provider command or Bash)
+  // Explicit process env wins over the persisted file override so wrapper
+  // scripts like `sebi` and `sebi-claude` can force the intended provider.
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_CODEX)) {
+    return 'codex'
+  }
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
+    return 'bedrock'
+  }
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)) {
+    return 'vertex'
+  }
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
+    return 'foundry'
+  }
+
   const fileOverride = getProviderOverride()
   if (fileOverride) return fileOverride
 
-  return isEnvTruthy(process.env.CLAUDE_CODE_USE_CODEX)
-    ? 'codex'
-    : isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
-      ? 'bedrock'
-      : isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)
-        ? 'vertex'
-        : isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
-          ? 'foundry'
-          : 'firstParty'
+  return 'firstParty'
 }
 
 export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {

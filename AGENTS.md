@@ -136,6 +136,9 @@ sebi
 ```
 /sebiralph "task description"
   │
+  ├─ Phase 0: Config + workflow defaults
+  │   TDD: ON by default
+  │
   ├─ Phase 1: Planning (sequential)
   │   Planner (Claude Opus) → JSON plan
   │   Evaluator (Codex gpt-5.4) → criteria-based review
@@ -147,14 +150,18 @@ sebi
   ├─ Phase 3: Swarm Implementation (parallel)
   │   Wave 0: contracts/shared (single agent)
   │   Wave 1+: parallel workers in git worktrees
+  │   Workers follow red-green-refactor when TDD is on
   │   Workers: Codex (provider: openai)
   │   Frontend: Claude Sonnet (provider: anthropic)
   │   Deterministic gates: path ownership, build, lint, test
   │
-  └─ Phase 4: Review & Merge
+  └─ Phase 4: Review, Merge, Deploy & Verify
       Claude Opus reviews each diff
       Fix loop → re-gate → re-review
       Merge to integration branch
+      Deploy integrated branch
+      Runtime verification on deployed surface
+      If gaps remain: fix → re-gate → re-review → re-deploy until closed
 ```
 
 ### Default Roles
@@ -173,6 +180,14 @@ sebi
 type ModelRef = { provider: 'anthropic' | 'openai'; model: string }
 type RalphRole = 'planner' | 'evaluator' | 'worker' | 'frontend' | 'reviewer'
 type RalphConfig = Record<RalphRole, ModelRef>
+type RalphWorkflowDefaults = {
+  tdd: boolean
+  deployVerification: boolean
+  maxPlanIterations: number
+  maxGateFixAttempts: number
+  maxReviewFixCycles: number
+  maxDeployFixCycles: number
+}
 type PRDTask = {
   id: string; title: string; description: string;
   role: 'worker' | 'frontend'; modelRef: ModelRef;
@@ -186,9 +201,9 @@ type PRDTask = {
 
 | File | Purpose |
 |------|---------|
-| `types.ts` | ModelRef, RalphConfig, PRDTask, RalphPlan |
-| `config.ts` | Default config, model picker, available models |
-| `orchestrator.ts` | Main orchestration prompt (7-step workflow) |
+| `types.ts` | ModelRef, RalphConfig, workflow defaults, PRDTask, RalphPlan |
+| `config.ts` | Default config, workflow defaults summary, model picker |
+| `orchestrator.ts` | Main orchestration prompt (8-phase workflow with TDD default and deploy-verify loop) |
 | `planner.ts` | Planner/evaluator prompts, hard gates, revision loop |
 | `prd.ts` | PRD JSON schema, markdown renderer, plan validator |
 | `swarm.ts` | Worker prompt builder, wave spec generator |

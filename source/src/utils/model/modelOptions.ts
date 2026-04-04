@@ -1,4 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { getInitialMainLoopModel } from '../../bootstrap/state.js'
 import {
   isClaudeAISubscriber,
@@ -24,6 +27,7 @@ import {
   getDefaultHaikuModel,
   getDefaultMainLoopModelSetting,
   getMarketingNameForModel,
+  getPublicModelDisplayName,
   getUserSpecifiedModelSetting,
   isOpus1mMergeEnabled,
   getOpus46PricingSuffix,
@@ -42,7 +46,108 @@ export type ModelOption = {
   descriptionForModel?: string
 }
 
+type CodexModelCacheEntry = {
+  slug: string
+  display_name?: string
+  description?: string
+  visibility?: string
+  supported_in_api?: boolean
+  priority?: number
+}
+
+const FALLBACK_CODEX_MODELS: CodexModelCacheEntry[] = [
+  {
+    slug: 'gpt-5.4',
+    description: 'Latest frontier agentic coding model.',
+    priority: 1,
+  },
+  {
+    slug: 'gpt-5.4-mini',
+    description: 'Smaller frontier agentic coding model.',
+    priority: 2,
+  },
+  {
+    slug: 'gpt-5.3-codex',
+    description: 'Frontier Codex-optimized agentic coding model.',
+    priority: 3,
+  },
+  {
+    slug: 'gpt-5.3-codex-spark',
+    description: 'Ultra-fast coding model.',
+    priority: 4,
+  },
+  {
+    slug: 'gpt-5.2-codex',
+    description: 'Frontier agentic coding model.',
+    priority: 5,
+  },
+  {
+    slug: 'gpt-5.2',
+    description: 'Optimized for professional work and long-running agents.',
+    priority: 6,
+  },
+  {
+    slug: 'gpt-5.1-codex-max',
+    description: 'Codex-optimized model for deep and fast reasoning.',
+    priority: 7,
+  },
+  {
+    slug: 'gpt-5.1-codex-mini',
+    description: 'Optimized for Codex. Cheaper, faster, but less capable.',
+    priority: 8,
+  },
+]
+
+function getCodexModelsCachePath(): string {
+  return join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'models_cache.json')
+}
+
+function mapCodexModelsToOptions(models: CodexModelCacheEntry[]): ModelOption[] {
+  return models
+    .filter(model => model.slug)
+    .sort((a, b) => (a.priority ?? Number.MAX_SAFE_INTEGER) - (b.priority ?? Number.MAX_SAFE_INTEGER))
+    .map(model => ({
+      value: model.slug,
+      label:
+        getPublicModelDisplayName(model.slug) ||
+        model.display_name ||
+        model.slug,
+      description: model.description || 'Codex model',
+      descriptionForModel: model.description || 'Codex model',
+    }))
+}
+
+function getCodexModelOptions(): ModelOption[] {
+  try {
+    const raw = readFileSync(getCodexModelsCachePath(), 'utf-8')
+    const parsed = JSON.parse(raw) as { models?: CodexModelCacheEntry[] }
+    const models = (parsed.models || []).filter(
+      model =>
+        model.visibility !== 'hidden' &&
+        model.supported_in_api !== false,
+    )
+    if (models.length > 0) {
+      return mapCodexModelsToOptions(models)
+    }
+  } catch {
+    // Fall back to the baked-in list when the local Codex cache is missing.
+  }
+  return mapCodexModelsToOptions(FALLBACK_CODEX_MODELS)
+}
+
 export function getDefaultOptionForUser(fastMode = false): ModelOption {
+  if (getAPIProvider() === 'codex') {
+    const currentModel = renderDefaultModelSetting(
+      getDefaultMainLoopModelSetting(),
+    )
+    return {
+      value: null,
+      label: 'Default (recommended)',
+      description: `Use the default Codex model (currently ${currentModel})`,
+      descriptionForModel: `Default Codex model (currently ${currentModel})`,
+    }
+  }
+
   if (process.env.USER_TYPE === 'ant') {
     const currentModel = renderDefaultModelSetting(
       getDefaultMainLoopModelSetting(),
@@ -269,6 +374,10 @@ function getOpusPlanOption(): ModelOption {
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
 function getModelOptionsBase(fastMode = false): ModelOption[] {
+  if (getAPIProvider() === 'codex') {
+    return [getDefaultOptionForUser(fastMode), ...getCodexModelOptions()]
+  }
+
   if (process.env.USER_TYPE === 'ant') {
     // Build options from antModels config
     const antModelOptions: ModelOption[] = getAntModels().map(m => ({

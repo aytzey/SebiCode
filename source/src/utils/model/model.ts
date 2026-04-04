@@ -375,7 +375,14 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
   // Codex model display names
   if (getAPIProvider() === 'codex') {
     const lower = model.toLowerCase()
-    for (const [key, name] of Object.entries(CODEX_DISPLAY_NAMES)) {
+    const exactName = CODEX_DISPLAY_NAMES[lower]
+    if (exactName) {
+      return exactName
+    }
+
+    for (const [key, name] of Object.entries(CODEX_DISPLAY_NAMES).sort(
+      ([left], [right]) => right.length - left.length,
+    )) {
       if (lower === key || lower.startsWith(key + '-')) return name
     }
     return model // pass through unknown models as-is
@@ -484,12 +491,19 @@ export function parseUserSpecifiedModel(
 
   // Codex: pass through OpenAI/Codex model names directly
   if (getAPIProvider() === 'codex') {
+    const defaultCodexModel = process.env.CODEX_MODEL || 'gpt-5.4'
     if (normalizedModel.startsWith('gpt-')) {
       return modelInputTrimmed
     }
+    // Provider switches can leave an explicit Claude model pinned in settings
+    // or session state. Codex cannot execute those IDs, so normalize them to
+    // the active Codex default instead of sending an invalid model upstream.
+    if (normalizedModel.includes('claude-')) {
+      return defaultCodexModel
+    }
     // Map Claude aliases to codex default
     if (normalizedModel === 'opus' || normalizedModel === 'sonnet' || normalizedModel === 'haiku' || normalizedModel === 'best' || normalizedModel === 'opusplan') {
-      return process.env.CODEX_MODEL || 'gpt-5.4'
+      return defaultCodexModel
     }
   }
 

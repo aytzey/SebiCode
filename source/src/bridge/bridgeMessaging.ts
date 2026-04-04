@@ -11,10 +11,8 @@
  */
 
 import { randomUUID } from 'crypto'
-import { writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { homedir } from 'node:os'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
+import { setMainLoopModelOverride } from '../bootstrap/state.js'
 
 /** Extract plain text from an SDK user message (string or content blocks). */
 function extractUserText(msg: SDKMessage): string | undefined {
@@ -41,6 +39,11 @@ import { normalizeControlMessageKeys } from '../utils/controlMessageCompat.js'
 import { logForDebugging } from '../utils/debug.js'
 import { stripDisplayTagsAllowEmpty } from '../utils/displayTags.js'
 import { errorMessage } from '../utils/errors.js'
+import {
+  getDefaultMainLoopModelSetting,
+  parseUserSpecifiedModel,
+} from '../utils/model/model.js'
+import { setProviderOverride } from '../utils/model/providers.js'
 import type { PermissionMode } from '../utils/permissions/PermissionMode.js'
 import { jsonParse } from '../utils/slowOperations.js'
 import type { ReplBridgeTransport } from './replBridgeTransport.js'
@@ -213,20 +216,16 @@ export function handleIngressMessage(
       // so we handle /provider here at the bridge message layer.
       const userText = extractUserText(parsed)
       if (userText) {
-        const providerFile = join(homedir(), '.claude', '.sebi-provider')
         const providerMatch = userText.match(/^\/provider\s+(codex|claude|anthropic|openai|gpt)\s*$/i)
         if (providerMatch) {
           const target = providerMatch[1]!.toLowerCase()
           const isCodex = target === 'codex' || target === 'openai' || target === 'gpt'
           const newProvider = isCodex ? 'codex' : 'firstParty'
           try {
-            writeFileSync(providerFile, newProvider, 'utf-8')
-            // Also set env var for the current process
-            if (isCodex) {
-              process.env.CLAUDE_CODE_USE_CODEX = '1'
-            } else {
-              delete process.env.CLAUDE_CODE_USE_CODEX
-            }
+            setProviderOverride(newProvider)
+            setMainLoopModelOverride(
+              parseUserSpecifiedModel(getDefaultMainLoopModelSetting()),
+            )
             logForDebugging(`[bridge:provider] Switched to ${newProvider}`)
           } catch (e) {
             logForDebugging(`[bridge:provider] Failed to write: ${e}`)
@@ -240,7 +239,7 @@ export function handleIngressMessage(
         const providerCheck = userText.match(/^\/provider\s*$/i)
         if (providerCheck) {
           let current = 'firstParty'
-          try { current = require('fs').readFileSync(providerFile, 'utf-8').trim() || 'firstParty' } catch { /* default */ }
+          try { current = require('fs').readFileSync(require('path').join(require('os').homedir(), '.claude', '.sebi-provider'), 'utf-8').trim() || 'firstParty' } catch { /* default */ }
           if ('message' in parsed && parsed.message && typeof parsed.message === 'object') {
             const msg = parsed.message as Record<string, unknown>
             msg.content = `[System: Current provider is ${current === 'codex' ? 'Codex (OpenAI/gpt-5.4)' : 'Claude (Anthropic/Opus 4.6)'}. Tell the user. They can switch with /provider codex or /provider claude.]`

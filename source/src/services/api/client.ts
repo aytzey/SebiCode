@@ -130,9 +130,12 @@ export async function getAnthropicClient({
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
-  // Provider routing: explicit providerOverride > env-var CLAUDE_CODE_USE_CODEX
+  // Provider routing: explicit providerOverride > file override > env-var
+  // getAPIProvider() checks the file (~/.claude/.sebi-provider) first, then
+  // falls back to CLAUDE_CODE_USE_CODEX env var — so it handles both the
+  // /provider command (file-based) and CLAUDE_CODE_USE_CODEX=1 (env-based).
   const useCodex = providerOverride === 'openai' ||
-    (providerOverride === undefined && isEnvTruthy(process.env.CLAUDE_CODE_USE_CODEX))
+    (providerOverride === undefined && getAPIProvider() === 'codex')
 
   if (useCodex) {
     const { OpenAIAdapter } = await import('./openai-adapter.js')

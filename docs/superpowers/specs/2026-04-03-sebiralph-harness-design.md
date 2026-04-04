@@ -14,6 +14,13 @@ Rewrite the orchestrator to produce a **structured 8-phase harness prompt** that
 
 **Skill mode**: `context: 'inline'` (runs in main conversation, allows user interaction for config and PRD approval).
 
+## 2026-04-04 Addendum
+
+- TDD is now **ON by default** for `/sebiralph` runs unless the user explicitly disables it in config review.
+- Planning and validation now require explicit regression/spec/smoke acceptance checks for each task.
+- Worker prompts now follow **red-green-refactor** when TDD is on.
+- The final phase no longer ends at merge. It must **deploy the integrated branch, verify the live/runtime surface, and loop through fix → gate → review → redeploy** until gaps are closed or a real external blocker is confirmed.
+
 ## Architecture
 
 ```

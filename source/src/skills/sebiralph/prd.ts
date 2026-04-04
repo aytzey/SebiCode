@@ -1,5 +1,11 @@
 import type { RalphPlan, PRDTask } from './types.js'
 
+const TEST_ACCEPTANCE_PATTERN = /\b(test|tests|spec|specs|regression|smoke|e2e|integration)\b/i
+
+export function hasExplicitTestAcceptanceCheck(task: PRDTask): boolean {
+  return task.acceptanceChecks.some(check => TEST_ACCEPTANCE_PATTERN.test(check))
+}
+
 export function renderPlanAsMarkdown(plan: RalphPlan): string {
   const lines: string[] = [`# ${plan.title}`, '', plan.summary, '', '## Shared Contracts', '']
   for (const [name, path] of Object.entries(plan.sharedContracts)) {
@@ -71,6 +77,9 @@ export function validatePlan(plan: RalphPlan): { valid: boolean; errors: string[
   }
   for (const task of plan.tasks) {
     if (task.acceptanceChecks.length === 0) errors.push(`Task ${task.id} has no acceptance checks`)
+    if (!hasExplicitTestAcceptanceCheck(task)) {
+      errors.push(`Task ${task.id} must include at least one explicit test/regression acceptance check for TDD`)
+    }
   }
   return { valid: errors.length === 0, errors }
 }

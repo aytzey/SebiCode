@@ -1,6 +1,6 @@
 import type { PRDTask } from './types.js'
 
-export function buildReviewPrompt(task: PRDTask, diffOutput: string): string {
+export function buildReviewPrompt(task: PRDTask, diffOutput: string, tddEnabled = true): string {
   return `Review this diff for task "${task.title}" (${task.id}).
 
 ## Acceptance Criteria
@@ -13,8 +13,10 @@ ${task.acceptanceChecks.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 ${diffOutput}
 \`\`\`
 
-Focus on: logic, security, acceptance criteria.
-Do NOT flag: style, build errors, missing tests (unless in criteria).
+Focus on: logic, security, acceptance criteria, and regression coverage.
+${tddEnabled
+    ? 'TDD is ON. If behavior changed without the corresponding tests/regressions being added or updated, that is a real issue and must be flagged.'
+    : 'Do NOT flag missing tests unless the acceptance criteria require them.'}
 
 If good: VERDICT: APPROVED
 If issues:
@@ -46,5 +48,5 @@ ${reviewFeedback}
 
 ## Owned Paths: ${task.ownedPaths.map(p => `\`${p}\``).join(', ')}
 
-Fix ONLY the identified issues. Stay within owned paths. Commit the fix.`
+Fix ONLY the identified issues. Stay within owned paths. Preserve or add the regression coverage needed to prove the fix. Commit the fix.`
 }

@@ -1,4 +1,4 @@
-import type { RalphConfig, RalphRole, ModelRef } from './types.js'
+import type { RalphConfig, RalphRole, ModelRef, RalphWorkflowDefaults } from './types.js'
 
 const AVAILABLE_MODELS: { label: string; ref: ModelRef }[] = [
   { label: 'Claude Opus 4.6',   ref: { provider: 'anthropic', model: 'claude-opus-4-6' } },
@@ -28,6 +28,16 @@ export function formatConfigSummary(config: RalphConfig): string {
     }
   )
   return lines.join('\n')
+}
+
+export function formatWorkflowSummary(workflow: RalphWorkflowDefaults): string {
+  return [
+    `  TDD: ${workflow.tdd ? 'ON (default)' : 'OFF'}`,
+    `  Deploy verification: ${workflow.deployVerification ? 'REQUIRED when TDD is ON' : 'OPTIONAL'}`,
+    `  Gate fix retries: ${workflow.maxGateFixAttempts}`,
+    `  Review fix cycles: ${workflow.maxReviewFixCycles}`,
+    `  Deploy fix cycles: ${workflow.maxDeployFixCycles}`,
+  ].join('\n')
 }
 
 export function formatConfigPickerPrompt(config: RalphConfig): string {

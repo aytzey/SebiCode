@@ -19,6 +19,18 @@ function formatPhase(phase: SebiRalphRunState['phase']): string {
   return phase.replace(/_/g, ' ')
 }
 
+function shouldAutoContinueRun(run: SebiRalphRunState): boolean {
+  if (run.phase === 'completed' || run.status === 'completed') {
+    return false
+  }
+
+  if (run.launchMode === 'loop') {
+    return true
+  }
+
+  return run.status === 'active'
+}
+
 function formatRunSummary(run: SebiRalphRunState): string {
   const deployStatus =
     run.deploy.status === 'unknown' ? 'not observed yet' : run.deploy.status
@@ -68,6 +80,12 @@ function buildResumePrompt(run: SebiRalphRunState): string {
     run.launchMode === 'loop'
       ? `Loop mode is ON with up to ${run.workflow.maxQualityLoops} post-deploy refinement loops.`
       : 'Loop mode is OFF for this run.',
+    run.launchMode === 'loop'
+      ? 'Loop checkpoints are pre-approved: do not stop for config review or PRD approval unless deploy input is missing or the user explicitly interrupts.'
+      : 'Config review and PRD approval still require explicit user confirmation.',
+    run.status === 'blocked'
+      ? 'The run is currently blocked. Attempt recovery automatically if the blocker looks transient; only stop again if a true external blocker remains.'
+      : 'Resume the run from its latest durable point.',
     'Use the existing transcript state; do not restart from Phase 0 unless the user explicitly asks to reconfigure the run.',
     `Keep emitting progress markers with run_id="${run.id}".`,
     run.phase === 'completed'
@@ -81,6 +99,7 @@ async function resumeRunSession(
   context: Parameters<LocalJSXCommandCall>[1],
   onDone: Parameters<LocalJSXCommandCall>[0],
 ): Promise<void> {
+  const shouldQuery = shouldAutoContinueRun(lookup.run)
   if (!context.resume) {
     onDone(
       `${formatRunSummary(lookup.run)}\n\nThis environment cannot resume saved sessions.`,
@@ -102,7 +121,11 @@ async function resumeRunSession(
       fullLog,
       'slash_command_session_id',
     )
-    onDone(undefined, { display: 'skip' })
+    onDone(undefined, {
+      display: 'skip',
+      shouldQuery,
+      metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,
+    })
   } catch (error) {
     onDone(
       `Failed to resume SebiRalph run ${lookup.run.id.slice(0, 8)}: ${(error as Error).message}`,
@@ -120,8 +143,7 @@ async function continueExistingRun(
     return null
   }
 
-  const shouldQuery =
-    lookup.run.status === 'active' && lookup.run.phase !== 'completed'
+  const shouldQuery = shouldAutoContinueRun(lookup.run)
   onDone(`Reusing existing SebiRalph run for this task.\n\n${formatRunSummary(lookup.run)}`, {
     shouldQuery,
     metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,
@@ -144,8 +166,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       return null
     }
 
-    const shouldQuery =
-      lookup.run.status === 'active' && lookup.run.phase !== 'completed'
+    const shouldQuery = shouldAutoContinueRun(lookup.run)
     onDone(formatRunSummary(lookup.run), {
       shouldQuery,
       metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,
@@ -166,8 +187,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       return null
     }
 
-    const shouldQuery =
-      lookup.run.status === 'active' && lookup.run.phase !== 'completed'
+    const shouldQuery = shouldAutoContinueRun(lookup.run)
     onDone(formatRunSummary(lookup.run), {
       shouldQuery,
       metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,

@@ -29,7 +29,7 @@ function phaseConfig(
   workflow: RalphWorkflowDefaults,
 ): string {
   return `
-## PHASE 0 — Config Review  ✦ HARD STOP
+## PHASE 0 — Config Review ${workflow.loopMode ? '✦ AUTO-CONTINUE IN LOOP MODE' : '✦ HARD STOP'}
 
 Current role assignments:
 ${formatConfigSummary(config)}
@@ -48,8 +48,10 @@ Loop mode meaning:
 Display the config and workflow defaults to the user and ask:
 > "SebiRalph config above. TDD is ON by default.${workflow.loopMode ? ' Loop mode is also ON for this run.' : ''} Approve? Reply **yes** to proceed, **role=N** to change a model, or **tdd=off** to disable the default TDD workflow for this run."
 
-**DO NOT proceed to Phase 1 until the user explicitly approves.**
-If the user disables TDD, restate that deploy verification becomes optional for this run and ask for confirmation again.
+${workflow.loopMode
+  ? `In loop mode, the current config is PRE-APPROVED. Briefly display the defaults, note that the user can still interrupt with overrides, then continue immediately to Phase 1. Only stop here if the user explicitly requested config changes in the current conversation.`
+  : `**DO NOT proceed to Phase 1 until the user explicitly approves.**
+If the user disables TDD, restate that deploy verification becomes optional for this run and ask for confirmation again.`}
 `
 }
 
@@ -240,7 +242,7 @@ If still rejected after ${workflow.maxPlanIterations} iterations → show the ev
 
 function phaseApprove(workflow: RalphWorkflowDefaults): string {
   return `
-## PHASE 4 — PRD Approval  ✦ HARD STOP
+## PHASE 4 — PRD Approval ${workflow.loopMode ? '✦ AUTO-CONTINUE IN LOOP MODE' : '✦ HARD STOP'}
 
 **Entry:** Plan approved by evaluator.
 
@@ -259,8 +261,10 @@ If \`deliveryContext.status = "NEEDS_USER_DEPLOY_INPUT"\`, stop and ask the user
 Then ask the user:
 > "Implementation plan above. TDD is ${workflow.tdd ? 'ON' : 'OFF'} for this run. Approve? Reply **Y** to start implementation, **n** to reject, or **edit** with changes."
 
-**DO NOT proceed to Phase 5 until the user explicitly approves.**
-If user requests edits, modify the plan and re-display.
+${workflow.loopMode
+  ? `In loop mode, the PRD is PRE-APPROVED after you display it. Continue directly into implementation unless deploy/runtime input is missing or the user explicitly interrupted with edits.`
+  : `**DO NOT proceed to Phase 5 until the user explicitly approves.**
+If user requests edits, modify the plan and re-display.`}
 
 **Exit:** User approves. Move to Phase 5.
 `
@@ -578,7 +582,7 @@ Spawn a reviewer-quality pass:
 \`\`\`
 Agent({
   description: "ralph-quality: critique deployed result",
-  prompt: "Original task: {TASK}\\nIntegration branch: {integration_branch}\\nDeployed surface: {runtime_surface}\\nRecent merged diff summary: {diff_summary}\\nCritique the shipped result for code quality, maintainability, reliability, UX polish, performance, and any missed opportunities. If the result is truly strong enough to ship, output QUALITY_VERDICT: SHIP_IT. Otherwise output QUALITY_VERDICT: REFINE plus a short ranked improvement backlog with deploy-visible wins first."
+  prompt: "Original task: {TASK}\\nIntegration branch: {integration_branch}\\nDeployed surface: {runtime_surface}\\nRecent merged diff summary: {diff_summary}\\nJudge the shipped result against a high bar: correctness, maintainability, test coverage, edge-case handling, UX polish, performance, and operational safety. Treat 'good enough' as a REFINE verdict. Only output QUALITY_VERDICT: SHIP_IT when the result is genuinely strong and you would be comfortable shipping it without apology. Otherwise output QUALITY_VERDICT: REFINE plus a short ranked improvement backlog with deploy-visible wins first."
 })
 \`\`\`
 
@@ -662,7 +666,7 @@ ${buildProgressProtocol(runtime)}
 
 ## Workflow Rules
 - Execute phases IN ORDER (0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8)
-- Phases 0 and 4 are HARD STOPS — wait for user approval
+- ${workflow.loopMode ? 'Phases 0 and 4 are pre-approved checkpoints in loop mode. Display them, then continue unless missing deploy input or the user explicitly interrupts.' : 'Phases 0 and 4 are HARD STOPS — wait for user approval'}
 - Always set the \`provider\` field on Agent calls — it routes to the correct AI model
 - Workers MUST use \`isolation: "worktree"\` for code isolation
 - Wave 1+ workers MUST use \`run_in_background: true\` for parallel execution

@@ -15,6 +15,8 @@ describe('buildHarnessPrompt', () => {
     expect(prompt).toContain('QUALITY_VERDICT: SHIP_IT')
     expect(prompt).toContain('return to Phase 5 → 6 → 7 → 8')
     expect(prompt).toContain(`${LOOP_WORKFLOW.maxQualityLoops} refinement loops`)
+    expect(prompt).toContain('PRE-APPROVED')
+    expect(prompt).toContain('Treat \'good enough\' as a REFINE verdict.')
   })
 
   test('keeps loop mode disabled in the standard workflow', () => {
@@ -28,5 +30,6 @@ describe('buildHarnessPrompt', () => {
     expect(prompt).toContain('Loop mode: OFF')
     expect(prompt).toContain('Disabled unless the user explicitly asks for another refinement round.')
     expect(prompt).not.toContain('QUALITY_VERDICT: SHIP_IT')
+    expect(prompt).toContain('Phases 0 and 4 are HARD STOPS')
   })
 })

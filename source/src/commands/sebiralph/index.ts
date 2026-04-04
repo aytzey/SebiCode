@@ -2,6 +2,7 @@ import type { Command } from '../../commands.js'
 
 const sebiralph: Command = {
   type: 'local-jsx',
+  supportsNonInteractive: true,
   name: 'sebiralph',
   aliases: ['ralph'],
   description:

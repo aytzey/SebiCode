@@ -144,6 +144,11 @@ export type LocalJSXCommandModule = {
 type LocalJSXCommand = {
   type: 'local-jsx'
   /**
+   * Opt-in for local JSX commands that do not require rendering UI and can
+   * safely complete through onDone() in non-interactive sessions.
+   */
+  supportsNonInteractive?: boolean
+  /**
    * Lazy-load the command implementation.
    * Returns a module with a call() function.
    * This defers loading heavy dependencies until the command is invoked.
@@ -213,4 +218,10 @@ export function getCommandName(cmd: CommandBase): string {
 /** Resolves whether the command is enabled, defaulting to true. */
 export function isCommandEnabled(cmd: CommandBase): boolean {
   return cmd.isEnabled?.() ?? true
+}
+
+export function isNonInteractiveSafeCommand(cmd: Command): boolean {
+  if (cmd.type === 'prompt') return !cmd.disableNonInteractive
+  if (cmd.type === 'local') return cmd.supportsNonInteractive
+  return cmd.supportsNonInteractive === true
 }

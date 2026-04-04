@@ -597,11 +597,12 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
                   })
                 }), result ? createUserMessage({
                   content: `<local-command-stdout>${result}</local-command-stdout>`
-                }) : createUserMessage({
+                  }) : createUserMessage({
                   content: `<local-command-stdout>${NO_CONTENT_MESSAGE}</local-command-stdout>`
                 }), ...metaMessages],
                 shouldQuery: options?.shouldQuery ?? false,
                 command,
+                resultText: result,
                 nextInput: options?.nextInput,
                 submitNextInput: options?.submitNextInput
               });

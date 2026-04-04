@@ -98,6 +98,7 @@ import { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES } from './services/plugin
 import { initBundledSkills } from './skills/bundled/index.js';
 import type { AgentColorName } from './tools/AgentTool/agentColorManager.js';
 import { getActiveAgentsFromList, getAgentDefinitionsWithOverrides, isBuiltInAgent, isCustomAgent, parseAgentsFromJson } from './tools/AgentTool/loadAgentsDir.js';
+import { isNonInteractiveSafeCommand } from './types/command.js';
 import type { LogOption } from './types/logs.js';
 import type { Message as MessageType } from './types/message.js';
 import { assertMinVersion } from './utils/autoUpdater.js';
@@ -2617,9 +2618,11 @@ async function run(): Promise<CommanderCommand> {
         process.exit(1);
       }
 
-      // Headless mode supports all prompt commands and some local commands
+      // Headless mode supports all prompt commands, non-interactive local
+      // commands, and an explicit allowlist of local-jsx commands that finish
+      // through onDone() without rendering UI.
       // If disableSlashCommands is true, return empty array
-      const commandsHeadless = disableSlashCommands ? [] : commands.filter(command => command.type === 'prompt' && !command.disableNonInteractive || command.type === 'local' && command.supportsNonInteractive);
+      const commandsHeadless = disableSlashCommands ? [] : commands.filter(command => isNonInteractiveSafeCommand(command));
       const defaultState = getDefaultAppState();
       const headlessInitialState: AppState = {
         ...defaultState,

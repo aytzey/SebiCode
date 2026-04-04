@@ -12,6 +12,7 @@ import {
   getEffectiveQualityLoopBudget,
   getRemainingQualityLoopBudget,
 } from './budget.js'
+import { reopenCompletedLoopRun } from './reopen.js'
 import {
   createSebiRalphRun,
   findSebiRalphRun,
@@ -147,11 +148,7 @@ function buildResumePrompt(
 async function extendCompletedLoopRun(
   lookup: SebiRalphRunLookup,
 ): Promise<SebiRalphRunLookup> {
-  const nextRun: SebiRalphRunState = {
-    ...lookup.run,
-    qualityLoopExtensions: lookup.run.qualityLoopExtensions + 1,
-    updatedAt: new Date().toISOString(),
-  }
+  const nextRun = reopenCompletedLoopRun(lookup.run)
   await saveSebiRalphRun(nextRun)
   return {
     ...lookup,

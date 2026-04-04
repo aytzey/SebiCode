@@ -10,6 +10,7 @@ import type { LogOption } from '../../types/logs.js'
 import { getLastSessionLog } from '../../utils/sessionStorage.js'
 import { getProjectDir } from '../../utils/sessionStoragePortable.js'
 import { deriveRunHydrationFromTranscript } from './markers.js'
+import { shouldKeepLoopRunOpen } from './reopen.js'
 import { selectReusableSebiRalphRun } from './selection.js'
 import type {
   SebiRalphExecutionPolicy,
@@ -239,6 +240,12 @@ export async function hydrateSebiRalphRun(
 
   if (hydration.lastQualityVerdict !== undefined) {
     next.lastQualityVerdict = hydration.lastQualityVerdict
+  }
+
+  if (shouldKeepLoopRunOpen(next)) {
+    next.phase = 'deploy_verify'
+    next.status = 'active'
+    delete next.completedAt
   }
 
   if (JSON.stringify(next) !== JSON.stringify(run)) {

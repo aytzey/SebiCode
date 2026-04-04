@@ -91,6 +91,7 @@ export type SebiRalphRunState = {
   deploy: SebiRalphDeployRecord
   qualityLoopsCompleted: number
   qualityLoopExtensions: number
+  reopenRequestedAt?: string
   lastQualityVerdict?: SebiRalphQualityVerdict
   lastProgressMarker?: string
   lastError?: string

@@ -1,5 +1,5 @@
 import { randomUUID, type UUID } from 'crypto'
-import { mkdir, readFile, readdir, writeFile } from 'fs/promises'
+import { mkdir, readdir, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import type {
@@ -9,8 +9,11 @@ import type {
 import type { LogOption } from '../../types/logs.js'
 import { getLastSessionLog } from '../../utils/sessionStorage.js'
 import { getProjectDir } from '../../utils/sessionStoragePortable.js'
+import {
+  applyRunHydration,
+  loadPersistedSebiRalphRun,
+} from './liveState.js'
 import { deriveRunHydrationFromTranscript } from './markers.js'
-import { shouldKeepLoopRunOpen } from './reopen.js'
 import { selectReusableSebiRalphRun } from './selection.js'
 import type {
   SebiRalphExecutionPolicy,
@@ -75,37 +78,8 @@ function isApiErrorMessage(message: LogOption['messages'][number]): boolean {
   )
 }
 
-function cloneRun(run: SebiRalphRunState): SebiRalphRunState {
-  return {
-    ...run,
-    executionPolicy: { ...run.executionPolicy },
-    taskRecords: [...run.taskRecords],
-    waveRecords: [...run.waveRecords],
-    deploy: { ...run.deploy },
-  }
-}
-
 async function loadRunFile(filePath: string): Promise<SebiRalphRunState | null> {
-  try {
-    const raw = await readFile(filePath, 'utf8')
-    const parsed = JSON.parse(raw) as SebiRalphRunState
-    parsed.workflow.loopMode ??= false
-    parsed.workflow.maxQualityLoops ??= 0
-    parsed.qualityLoopsCompleted ??= 0
-    parsed.qualityLoopExtensions ??= 0
-    if (!parsed.launchMode) {
-      parsed.launchMode = parsed.workflow.loopMode ? 'loop' : 'standard'
-    }
-    if (parsed.executionPolicy.loopMode === undefined) {
-      parsed.executionPolicy.loopMode = parsed.workflow.loopMode
-    }
-    if (parsed.executionPolicy.maxQualityLoops === undefined) {
-      parsed.executionPolicy.maxQualityLoops = parsed.workflow.maxQualityLoops
-    }
-    return parsed
-  } catch {
-    return null
-  }
+  return loadPersistedSebiRalphRun(filePath)
 }
 
 export async function saveSebiRalphRun(
@@ -183,7 +157,6 @@ export async function hydrateSebiRalphRun(
     return { run, transcriptFound: false }
   }
 
-  const next = cloneRun(run)
   const assistantMessages = log.messages.filter(message => message.type === 'assistant')
   const hydration = deriveRunHydrationFromTranscript({
     runId: run.id,
@@ -193,60 +166,7 @@ export async function hydrateSebiRalphRun(
     })),
     modifiedAt: log.modified.toISOString(),
   })
-
-  if (hydration.updatedAt > next.updatedAt) {
-    next.updatedAt = hydration.updatedAt
-  }
-
-  if (hydration.phase) {
-    next.phase = hydration.phase
-  }
-
-  if (hydration.status) {
-    next.status = hydration.status
-  }
-
-  if (hydration.lastProgressMarker) {
-    next.lastProgressMarker = hydration.lastProgressMarker
-  }
-
-  if (hydration.completedAt) {
-    next.completedAt ??= hydration.completedAt
-  }
-
-  if (hydration.integrationBranch) {
-    next.integrationBranch = hydration.integrationBranch
-  }
-
-  if (hydration.lastError !== undefined) {
-    if (hydration.lastError) {
-      next.lastError = hydration.lastError
-    } else {
-      delete next.lastError
-    }
-  }
-
-  if (hydration.deploy) {
-    const nextDeploy = { ...next.deploy, ...hydration.deploy }
-    if (hydration.deploy.status === 'blocked' && next.deploy.status === 'passed') {
-      nextDeploy.status = 'passed'
-    }
-    next.deploy = nextDeploy
-  }
-
-  if (hydration.qualityLoopsCompleted !== undefined) {
-    next.qualityLoopsCompleted = hydration.qualityLoopsCompleted
-  }
-
-  if (hydration.lastQualityVerdict !== undefined) {
-    next.lastQualityVerdict = hydration.lastQualityVerdict
-  }
-
-  if (shouldKeepLoopRunOpen(next)) {
-    next.phase = 'deploy_verify'
-    next.status = 'active'
-    delete next.completedAt
-  }
+  const next = applyRunHydration(run, hydration)
 
   if (JSON.stringify(next) !== JSON.stringify(run)) {
     await saveSebiRalphRun(next)

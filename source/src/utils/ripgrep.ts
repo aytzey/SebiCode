@@ -5,6 +5,7 @@ import { homedir } from 'os'
 import * as path from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
 import { fileURLToPath } from 'url'
+import { ensureExecutable } from './ensureExecutable.js'
 import { isInBundledMode } from './bundledMode.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
@@ -26,6 +27,13 @@ type RipgrepConfig = {
   command: string
   args: string[]
   argv0?: string
+}
+
+export function ensureRipgrepExecutable(command: string): string {
+  ensureExecutable(command, message =>
+    logForDebugging(`Failed to ensure ripgrep is executable at ${command}: ${message}`),
+  )
+  return command
 }
 
 const getRipgrepConfig = memoize((): RipgrepConfig => {
@@ -59,7 +67,9 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
   const command =
     process.platform === 'win32'
       ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
-      : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
+      : ensureRipgrepExecutable(
+          path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg'),
+        )
 
   return { mode: 'builtin', command, args: [] }
 })

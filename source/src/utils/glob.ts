@@ -1,6 +1,9 @@
 import { basename, dirname, isAbsolute, join, sep } from 'path'
 import type { ToolPermissionContext } from '../Tool.js'
-import { isEnvTruthy } from './envUtils.js'
+import {
+  shouldGlobIncludeHiddenFiles,
+  shouldGlobIncludeIgnoredFiles,
+} from './globConfig.js'
 import {
   getFileReadIgnorePatterns,
   normalizePatternsToPath,
@@ -92,11 +95,12 @@ export async function glob(
   // --files: list files instead of searching content
   // --glob: filter by pattern
   // --sort=modified: sort by modification time (oldest first)
-  // --no-ignore: don't respect .gitignore (default true, set CLAUDE_CODE_GLOB_NO_IGNORE=false to respect .gitignore)
+  // --no-ignore: respect .gitignore by default to avoid scanning generated/vendor trees
+  // like node_modules during exploratory file lookups. Set
+  // CLAUDE_CODE_GLOB_NO_IGNORE=true to include ignored files.
   // --hidden: include hidden files (default true, set CLAUDE_CODE_GLOB_HIDDEN=false to exclude)
-  // Note: use || instead of ?? to treat empty string as unset (defaulting to true)
-  const noIgnore = isEnvTruthy(process.env.CLAUDE_CODE_GLOB_NO_IGNORE || 'true')
-  const hidden = isEnvTruthy(process.env.CLAUDE_CODE_GLOB_HIDDEN || 'true')
+  const noIgnore = shouldGlobIncludeIgnoredFiles()
+  const hidden = shouldGlobIncludeHiddenFiles()
   const args = [
     '--files',
     '--glob',

@@ -1,8 +1,10 @@
 /**
  * SebiRalph Skill Registration
  *
- * Registers /sebiralph as a bundled skill. At invocation time, builds
- * the full 8-phase harness prompt using all sebiralph modules.
+ * Registers an internal SebiRalph bundled template. The user-facing
+ * stateful entrypoint is the local `/sebiralph` command; this hidden
+ * bundled skill exists only to keep the prompt graph bundled and
+ * available for internal reuse without shadowing the command.
  *
  * All modules are imported here to ensure none are dead code:
  *  - types.ts        → DEFAULT_CONFIG, type definitions
@@ -51,12 +53,13 @@ void cleanupIntegrationBranch
 
 export function registerSebiRalphSkill(): void {
   registerBundledSkill({
-    name: 'sebiralph',
-    description: 'Multi-provider swarm harness: Claude plans + reviews, Codex implements. 8-phase workflow with TDD, deploy verification, and parallel wave execution in isolated worktrees.',
-    aliases: ['ralph'],
-    whenToUse: 'When the user wants to orchestrate a complex implementation using both Claude and Codex models collaboratively via /sebiralph <task>',
-    userInvocable: true,
-    argumentHint: '<task description>',
+    name: 'sebiralph-template',
+    description:
+      'Internal SebiRalph harness prompt template. The user-facing entrypoint is the local /sebiralph command.',
+    whenToUse:
+      'Internal SebiRalph prompt template registration for the stateful /sebiralph command',
+    userInvocable: false,
+    disableModelInvocation: true,
     effort: 'max' as import('../../utils/effort.js').EffortValue,
 
     async getPromptForCommand(args: string) {

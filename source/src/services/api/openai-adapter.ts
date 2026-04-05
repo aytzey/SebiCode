@@ -23,13 +23,19 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { gzipSync } from 'node:zlib'
 import { getSessionId } from '../../bootstrap/state.js'
+import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
 
 // ---------------------------------------------------------------------------
 // Codex Auth — reads ~/.codex/auth.json, handles token refresh
 // ---------------------------------------------------------------------------
 
 const CODEX_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+// Prefix for storing encrypted reasoning content inside thinking blocks
+const ENCRYPTED_REASONING_PREFIX = '__codex_encrypted_reasoning:'
+// Only compress request bodies larger than this threshold (bytes)
+const GZIP_MIN_SIZE = 1024
 const AUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token'
 const DEFAULT_CODEX_BASE = 'https://chatgpt.com/backend-api/codex'
 const DEFAULT_MODEL = 'gpt-5.4'
@@ -52,6 +58,21 @@ interface CodexAuthData {
 let cachedAuth: CodexAuthData | null = null
 let lastAuthReadMs = 0
 let refreshPromise: Promise<CodexAuthData> | null = null
+
+// ---------------------------------------------------------------------------
+// Session-level state for conversation continuity (matches Codex CLI behavior)
+// ---------------------------------------------------------------------------
+
+/** Last response ID — used as `previous_response_id` in subsequent requests
+ *  so the server can do incremental processing instead of re-reading full history */
+let lastResponseId: string | null = null
+
+/** Sticky routing token from `x-codex-turn-state` response header.
+ *  Replaying this ensures requests hit the same server, preserving cached state. */
+let turnStateToken: string | null = null
+
+/** Previous request's input items — used to compute incremental deltas */
+let lastRequestInput: ResponsesInputItem[] | null = null
 
 function getCodexHome(): string {
   return process.env.CODEX_HOME || join(homedir(), '.codex')
@@ -211,6 +232,7 @@ type ResponsesInputItem =
   | { role: 'user' | 'assistant' | 'system'; content: string | ResponsesContentPart[] }
   | { type: 'function_call'; call_id: string; name: string; arguments: string; id?: string }
   | { type: 'function_call_output'; call_id: string; output: string }
+  | { type: 'reasoning'; id: string; encrypted_content: unknown }
 
 interface ResponsesContentPart {
   type: 'input_text' | 'input_image'
@@ -306,8 +328,25 @@ function translateMessages(messages: AnthropicMessage[]): ResponsesInputItem[] {
             name: tu.name,
             arguments: JSON.stringify(tu.input),
           })
+        } else if (block.type === 'thinking') {
+          // Carry encrypted reasoning content from previous turns.
+          // The adapter stores captured encrypted_content in thinking blocks
+          // prefixed with ENCRYPTED_REASONING_PREFIX so we can identify them.
+          const thinking = (block as { type: 'thinking'; thinking: string }).thinking
+          if (thinking.startsWith(ENCRYPTED_REASONING_PREFIX)) {
+            try {
+              const encrypted = JSON.parse(thinking.slice(ENCRYPTED_REASONING_PREFIX.length))
+              result.push({
+                type: 'reasoning',
+                id: encrypted.id || genId('rs'),
+                encrypted_content: encrypted.encrypted_content,
+              } as unknown as ResponsesInputItem)
+            } catch {
+              // Malformed encrypted content — skip
+            }
+          }
+          // Skip non-encrypted thinking blocks — Responses API uses reasoning internally
         }
-        // Skip 'thinking' blocks — Responses API uses reasoning internally
       }
 
       if (textParts.length > 0) {
@@ -420,6 +459,9 @@ class ResponsesStreamToAnthropicStream {
     }
     this.reader = response.body.getReader()
     this.model = model
+    // Capture x-codex-turn-state from response for sticky routing
+    const ts = response.headers.get('x-codex-turn-state')
+    if (ts) turnStateToken = ts
     // Wire up a real AbortController so callers can cancel the stream
     this.controller = new AbortController()
     this.controller.signal.addEventListener('abort', () => {
@@ -610,14 +652,43 @@ class ResponsesStreamToAnthropicStream {
         this.anthropicBlockIndex++
         break
 
-      case 'response.output_item.done':
-        // Item done — already handled by text.done / arguments.done
+      case 'response.output_item.done': {
+        // Capture reasoning items with encrypted content for carry-forward.
+        // These get emitted as thinking blocks so they persist in the conversation
+        // history and can be included in subsequent requests via translateMessages.
+        const doneItem = data.item as Record<string, unknown>
+        if (doneItem?.type === 'reasoning' && doneItem.encrypted_content) {
+          // Close any open text block first
+          if (this.currentTextBlockOpen) {
+            yield { type: 'content_block_stop', index: this.anthropicBlockIndex }
+            this.anthropicBlockIndex++
+            this.currentTextBlockOpen = false
+          }
+          // Emit as a thinking block with encrypted content prefix
+          const payload = JSON.stringify({
+            id: doneItem.id,
+            encrypted_content: doneItem.encrypted_content,
+          })
+          yield {
+            type: 'content_block_start',
+            index: this.anthropicBlockIndex,
+            content_block: {
+              type: 'thinking',
+              thinking: ENCRYPTED_REASONING_PREFIX + payload,
+            },
+          }
+          yield { type: 'content_block_stop', index: this.anthropicBlockIndex }
+          this.anthropicBlockIndex++
+        }
         break
+      }
 
       case 'response.completed': {
         // Handle both flat format (data.status) and nested format (data.response.status)
         const resp = (data.response as Record<string, unknown>) || data
         const status = resp.status as string
+        // Capture response_id for previous_response_id in next request
+        if (resp.id) lastResponseId = resp.id as string
         if (status === 'completed') {
           // Check if there were tool calls → stop_reason = tool_use
           const output = resp.output as Array<Record<string, unknown>> | undefined
@@ -849,16 +920,39 @@ export class OpenAIAdapter {
 
     // Build request body matching official Codex CLI format exactly
     const hasReasoning = effort !== 'none'
+
+    // Incremental input: if we have a previous_response_id, only send new items
+    // This matches Codex CLI's behavior — the server already has the history
+    let effectiveInput = input
+    let previousResponseId: string | null = null
+    if (lastResponseId && lastRequestInput) {
+      // Check if current input starts with the same items as last request
+      const baseline = lastRequestInput.length
+      if (
+        baseline > 0 &&
+        input.length > baseline &&
+        JSON.stringify(input.slice(0, baseline)) === JSON.stringify(lastRequestInput)
+      ) {
+        // Only send new items — server has the rest via previous_response_id
+        effectiveInput = input.slice(baseline)
+        previousResponseId = lastResponseId
+      }
+    }
+    // Save current input for next turn's incremental comparison
+    lastRequestInput = input
+
     const body: Record<string, unknown> = {
       model,
       instructions: instructions || '',
-      input,
+      input: effectiveInput,
       stream: true,
       store: false,
       tool_choice: 'auto',
       parallel_tool_calls: true,
       // Prompt cache: route by session ID (90% discount on cached tokens)
       ...(cacheKey && { prompt_cache_key: cacheKey }),
+      // Conversation continuity: server skips re-processing previous turns
+      ...(previousResponseId && { previous_response_id: previousResponseId }),
       // Include encrypted reasoning content for context continuity
       include: hasReasoning ? ['reasoning.encrypted_content'] : [],
     }
@@ -877,13 +971,17 @@ export class OpenAIAdapter {
     }
 
     // Build headers — match Codex CLI headers
+    const requestId = randomUUID()
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
+      'x-client-request-id': requestId,
       ...(cacheKey && {
         'session_id': cacheKey,
-        'x-client-request-id': cacheKey,
+        'conversation-id': cacheKey,
       }),
+      // Sticky routing: ensure requests hit the same server for cached state
+      ...(turnStateToken && { 'x-codex-turn-state': turnStateToken }),
     }
 
     if (auth.auth_mode === 'api_key' && auth.OPENAI_API_KEY) {
@@ -903,24 +1001,40 @@ export class OpenAIAdapter {
 
     // Forward abort signal
     const signal = (options?.signal as AbortSignal) || undefined
-    const controller = new AbortController()
-    if (signal) {
-      signal.addEventListener('abort', () => controller.abort(), { once: true })
+    const { signal: requestSignal, cleanup } = createCombinedAbortSignal(signal, {
+      timeoutMs: this.timeout,
+    })
+
+    // Helper: send request with gzip compression for large payloads
+    const sendRequest = (reqBody: Record<string, unknown>, reqHeaders: Record<string, string>, sig: AbortSignal) => {
+      const json = JSON.stringify(reqBody)
+      const useGzip = json.length >= GZIP_MIN_SIZE
+      const finalBody: BodyInit = useGzip ? gzipSync(Buffer.from(json)) : json
+      const finalHeaders = useGzip
+        ? { ...reqHeaders, 'Content-Encoding': 'gzip' }
+        : reqHeaders
+      return fetch(`${baseURL}/responses`, {
+        method: 'POST',
+        headers: finalHeaders,
+        body: finalBody,
+        signal: sig,
+      })
     }
 
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout)
-
     try {
-      const response = await fetch(`${baseURL}/responses`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      })
-
-      clearTimeout(timeoutId)
+      const response = await sendRequest(body, headers, requestSignal)
 
       if (!response.ok) {
+        // Reset incremental state on error — previous_response_id may be stale
+        if (previousResponseId) {
+          lastResponseId = null
+          lastRequestInput = null
+          // Retry with full input (non-incremental)
+          body.input = input
+          delete body.previous_response_id
+          const retryResp = await sendRequest(body, headers, requestSignal)
+          if (retryResp.ok) return retryResp
+        }
         const errorBody = await response.text()
         const status = response.status
         const error = new Error(`Codex API error ${status}: ${errorBody}`) as Error & {
@@ -960,12 +1074,7 @@ export class OpenAIAdapter {
             const retryController = new AbortController()
             const retryTimeout = setTimeout(() => retryController.abort(), this.timeout)
             try {
-              const retryResponse = await fetch(`${baseURL}/responses`, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(body),
-                signal: retryController.signal,
-              })
+              const retryResponse = await sendRequest(body, headers, retryController.signal)
               clearTimeout(retryTimeout)
               if (retryResponse.ok) return retryResponse
               // If still a server error, continue retrying
@@ -988,12 +1097,7 @@ export class OpenAIAdapter {
             const retryController = new AbortController()
             const retryTimeout = setTimeout(() => retryController.abort(), this.timeout)
             try {
-              const retryResponse = await fetch(`${baseURL}/responses`, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(body),
-                signal: retryController.signal,
-              })
+              const retryResponse = await sendRequest(body, headers, retryController.signal)
               clearTimeout(retryTimeout)
               if (retryResponse.ok) return retryResponse
             } catch {
@@ -1008,8 +1112,9 @@ export class OpenAIAdapter {
 
       return response
     } catch (err) {
-      clearTimeout(timeoutId)
       throw err
+    } finally {
+      cleanup()
     }
   }
 }

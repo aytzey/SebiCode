@@ -695,6 +695,24 @@ function finalizeBuild() {
   );
   const wrapperSource =
     `${createBanner(packageJson.version)}` +
+    `const __claudeCodeDesiredHeapMb = Number(process.env.CLAUDE_CODE_MAX_OLD_SPACE_MB || '8192');\n` +
+    `const __claudeCodeExplicitHeapArg = process.execArgv.some(arg => /^--max-old-space-size(?:=|$)/.test(arg));\n` +
+    `const __claudeCodeExplicitHeapEnv = /--max-old-space-size(?:=|\\s)\\d+/.test(process.env.NODE_OPTIONS || '');\n` +
+    `if (process.release?.name === 'node' && !process.env.CLAUDE_CODE_HEAP_REEXECED && __claudeCodeDesiredHeapMb > 0 && !__claudeCodeExplicitHeapArg && !__claudeCodeExplicitHeapEnv) {\n` +
+    `  const { getHeapStatistics } = await import('node:v8');\n` +
+    `  const __claudeCodeHeapLimitMb = Math.round(getHeapStatistics().heap_size_limit / (1024 * 1024));\n` +
+    `  if (__claudeCodeHeapLimitMb > 0 && __claudeCodeHeapLimitMb + 256 < __claudeCodeDesiredHeapMb) {\n` +
+    `    const { spawnSync } = await import('node:child_process');\n` +
+    `    const __claudeCodeRespawn = spawnSync(process.execPath, [\`--max-old-space-size=\${__claudeCodeDesiredHeapMb}\`, ...process.execArgv, ...process.argv.slice(1)], {\n` +
+    `      stdio: 'inherit',\n` +
+    `      env: { ...process.env, CLAUDE_CODE_HEAP_REEXECED: '1' },\n` +
+    `    });\n` +
+    `    if (typeof __claudeCodeRespawn.status === 'number') {\n` +
+    `      process.exit(__claudeCodeRespawn.status);\n` +
+    `    }\n` +
+    `    process.exit(1);\n` +
+    `  }\n` +
+    `}\n` +
     `const __localStorageData = new Map();\n` +
     `Object.defineProperty(globalThis, 'localStorage', {\n` +
     `  configurable: true,\n` +
@@ -1639,6 +1657,37 @@ function copyRuntimeVendorAssets(bundleRoot) {
     force: true,
     preserveTimestamps: true,
   });
+  ensureRuntimeVendorExecutables(destinationRoot);
+}
+
+function ensureExecutableMode(candidate) {
+  if (process.platform === 'win32' || !isFile(candidate)) {
+    return;
+  }
+
+  const mode = fs.statSync(candidate).mode & 0o777;
+  if ((mode & 0o111) === 0o111) {
+    return;
+  }
+
+  fs.chmodSync(candidate, mode | 0o111);
+}
+
+function ensureRuntimeVendorExecutables(vendorRoot) {
+  if (process.platform === 'win32') {
+    return;
+  }
+
+  const executables = [
+    path.join(vendorRoot, 'ripgrep', 'x64-linux', 'rg'),
+    path.join(vendorRoot, 'ripgrep', 'arm64-linux', 'rg'),
+    path.join(vendorRoot, 'ripgrep', 'x64-darwin', 'rg'),
+    path.join(vendorRoot, 'ripgrep', 'arm64-darwin', 'rg'),
+  ];
+
+  for (const executable of executables) {
+    ensureExecutableMode(executable);
+  }
 }
 
 function removePath(targetPath) {

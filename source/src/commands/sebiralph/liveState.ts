@@ -1,6 +1,6 @@
 import { readdir, readFile, writeFile } from 'fs/promises'
-import { homedir } from 'os'
 import { join } from 'path'
+import { getProjectDir } from '../../utils/sessionStoragePortable.js'
 import { deriveRunHydrationFromTranscript } from './markers.js'
 import type { SebiRalphTranscriptHydration } from './markers.js'
 import { shouldKeepLoopRunOpen } from './reopen.js'
@@ -10,7 +10,6 @@ import type {
 } from './types.js'
 
 const RUNS_DIRNAME = 'sebiralph-runs'
-const MAX_SANITIZED_LENGTH = 200
 const MARKER_HINT_RE =
   /<(?:sebiralph-progress|sebiralph-integration|sebiralph-deploy|sebiralph-loop)\b/i
 const LEGACY_HINT_RE =
@@ -35,30 +34,8 @@ function getRunPath(runId: string, projectPath: string): string {
   return join(getRunsDir(projectPath), `${runId}.json`)
 }
 
-function getClaudeConfigHomeDir(): string {
-  return (process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')).normalize(
-    'NFC',
-  )
-}
-
-function djb2Hash(input: string): number {
-  let hash = 5381
-  for (let i = 0; i < input.length; i += 1) {
-    hash = ((hash << 5) + hash + input.charCodeAt(i)) | 0
-  }
-  return hash
-}
-
-function sanitizeProjectPath(projectPath: string): string {
-  const sanitized = projectPath.replace(/[^a-zA-Z0-9]/g, '-')
-  if (sanitized.length <= MAX_SANITIZED_LENGTH) {
-    return sanitized
-  }
-  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${Math.abs(djb2Hash(projectPath)).toString(36)}`
-}
-
 export function getPersistedProjectDir(projectPath: string): string {
-  return join(getClaudeConfigHomeDir(), 'projects', sanitizeProjectPath(projectPath))
+  return getProjectDir(projectPath)
 }
 
 export function getPersistedSebiRalphRunsDir(projectPath: string): string {

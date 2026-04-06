@@ -87,6 +87,27 @@ function getToolUseSummary(
   return parts.length > 0 ? parts.join(' ') : null
 }
 
+function extractPatchPaths(
+  patch: string | undefined,
+  cwd = getCwd(),
+): string[] {
+  if (!patch) {
+    return []
+  }
+
+  const paths = new Set<string>()
+  for (const match of patch.matchAll(
+    /\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+)/g,
+  )) {
+    const relPath = match[1]?.trim()
+    if (!relPath) {
+      continue
+    }
+    paths.add(expandPath(`${cwd}/${relPath}`))
+  }
+  return [...paths]
+}
+
 function renderToolUseMessage(
   input: Partial<{ patch: string }>,
   { verbose }: { verbose: boolean },
@@ -206,31 +227,24 @@ Rules:
     return input.patch ?? ''
   },
 
-  getPath(_input): string | undefined {
-    // Patches can touch multiple files; no single path
-    return undefined
+  getPath(input): string {
+    return extractPatchPaths(input.patch)[0] ?? getCwd()
   },
 
   async preparePermissionMatcher({ patch }) {
-    // Extract all file paths from the patch for permission matching
-    const paths: string[] = []
-    const cwd = getCwd()
-    for (const match of (patch ?? '').matchAll(
-      /\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+)/g,
-    )) {
-      const rel = match[1]!.trim()
-      paths.push(expandPath(`${cwd}/${rel}`))
-    }
+    const paths = extractPatchPaths(patch)
     return (pattern: string) =>
       paths.some(p => matchWildcardPattern(pattern, p))
   },
 
   async checkPermissions(input, context): Promise<PermissionDecision> {
     const appState = context.getAppState()
+    const pathsToCheck = extractPatchPaths(input.patch)
     return checkWritePermissionForTool(
       ApplyPatchTool,
       input,
       appState.toolPermissionContext,
+      pathsToCheck.length > 0 ? pathsToCheck : undefined,
     )
   },
 

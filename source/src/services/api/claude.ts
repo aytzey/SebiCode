@@ -640,10 +640,27 @@ export function assistantMessageToMessageParam(
   addCache = false,
   enablePromptCaching: boolean,
   querySource?: QuerySource,
+  preserveCodexEncryptedReasoning = false,
 ): MessageParam {
+  const codexEncryptedReasoning = (
+    message as AssistantMessage & {
+      codexEncryptedReasoning?: ReadonlyArray<{
+        id: string
+        encrypted_content: unknown
+      }>
+    }
+  ).codexEncryptedReasoning
+  const withCodexEncryptedReasoning = (param: MessageParam): MessageParam =>
+    preserveCodexEncryptedReasoning && codexEncryptedReasoning?.length
+      ? ({
+          ...param,
+          codex_encrypted_reasoning: [...codexEncryptedReasoning],
+        } as MessageParam)
+      : param
+
   if (addCache) {
     if (typeof message.message.content === 'string') {
-      return {
+      return withCodexEncryptedReasoning({
         role: 'assistant',
         content: [
           {
@@ -654,9 +671,9 @@ export function assistantMessageToMessageParam(
             }),
           },
         ],
-      }
+      })
     } else {
-      return {
+      return withCodexEncryptedReasoning({
         role: 'assistant',
         content: message.message.content.map((_, i) => ({
           ..._,
@@ -669,13 +686,52 @@ export function assistantMessageToMessageParam(
               : {}
             : {}),
         })),
-      }
+      })
     }
   }
-  return {
+  return withCodexEncryptedReasoning({
     role: 'assistant',
     content: message.message.content,
+  })
+}
+
+type CodexEncryptedReasoningItem = {
+  id: string
+  encrypted_content: unknown
+}
+
+function getCodexEncryptedReasoningFromResult(
+  result: { codex_encrypted_reasoning?: unknown },
+): ReadonlyArray<CodexEncryptedReasoningItem> | undefined {
+  const reasoning = result.codex_encrypted_reasoning
+  return Array.isArray(reasoning)
+    ? (reasoning as ReadonlyArray<CodexEncryptedReasoningItem>)
+    : undefined
+}
+
+function getCodexEncryptedReasoningFromStream(
+  stream: Stream<BetaRawMessageStreamEvent>,
+): ReadonlyArray<CodexEncryptedReasoningItem> | undefined {
+  const reasoning = (
+    stream as Stream<BetaRawMessageStreamEvent> & {
+      codexEncryptedReasoning?: ReadonlyArray<CodexEncryptedReasoningItem>
+    }
+  ).codexEncryptedReasoning
+  return Array.isArray(reasoning) ? reasoning : undefined
+}
+
+function attachCodexEncryptedReasoningToAssistantMessage(
+  message: AssistantMessage | undefined,
+  reasoning: ReadonlyArray<CodexEncryptedReasoningItem> | undefined,
+): void {
+  if (!message || !reasoning?.length) {
+    return
   }
+  ;(
+    message as AssistantMessage & {
+      codexEncryptedReasoning?: CodexEncryptedReasoningItem[]
+    }
+  ).codexEncryptedReasoning = [...reasoning]
 }
 
 export type Options = {
@@ -1713,6 +1769,9 @@ async function* queryModel(
       : undefined
 
     lastRequestBetas = betasParams
+    const preserveCodexEncryptedReasoning =
+      options.providerOverride === 'openai' ||
+      (options.providerOverride === undefined && getAPIProvider() === 'codex')
 
     return {
       model: normalizeModelStringForAPI(options.model),
@@ -1724,6 +1783,7 @@ async function* queryModel(
         consumedCacheEdits,
         consumedPinnedEdits,
         options.skipCacheWrite,
+        preserveCodexEncryptedReasoning,
       ),
       system,
       tools: allTools,
@@ -2323,6 +2383,10 @@ async function* queryModel(
       }
       // Clear the idle timeout watchdog now that the stream loop has exited
       clearStreamIdleTimers()
+      attachCodexEncryptedReasoningToAssistantMessage(
+        newMessages[0],
+        getCodexEncryptedReasoningFromStream(stream),
+      )
 
       // If the stream was aborted by our idle timeout watchdog, fall back to
       // non-streaming retry rather than treating it as a completed stream.
@@ -2608,6 +2672,10 @@ async function* queryModel(
           advisorModel,
         }),
       }
+      attachCodexEncryptedReasoningToAssistantMessage(
+        m,
+        getCodexEncryptedReasoningFromResult(result),
+      )
       newMessages.push(m)
       fallbackMessage = m
       yield m
@@ -2701,6 +2769,10 @@ async function* queryModel(
             research !== undefined && { research }),
           ...(advisorModel && { advisorModel }),
         }
+        attachCodexEncryptedReasoningToAssistantMessage(
+          m,
+          getCodexEncryptedReasoningFromResult(result),
+        )
         newMessages.push(m)
         fallbackMessage = m
         yield m
@@ -3094,6 +3166,7 @@ export function addCacheBreakpoints(
   newCacheEdits?: CachedMCEditsBlock | null,
   pinnedEdits?: CachedMCPinnedEdits[],
   skipCacheWrite = false,
+  preserveCodexEncryptedReasoning = false,
 ): MessageParam[] {
   logEvent('tengu_api_cache_breakpoints', {
     totalMessageCount: messages.length,
@@ -3128,6 +3201,7 @@ export function addCacheBreakpoints(
       addCache,
       enablePromptCaching,
       querySource,
+      preserveCodexEncryptedReasoning,
     )
   })
 

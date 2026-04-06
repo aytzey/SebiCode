@@ -154,13 +154,25 @@ function isLikelyGenericStatusUpdate(text: string): boolean {
   if (!normalized || normalized.length > GENERIC_STATUS_UPDATE_MAX_CHARS) {
     return false
   }
-  if (GENERIC_STATUS_BLOCKERS.some(pattern => pattern.test(normalized))) {
+  if (hasGenericStatusBlocker(normalized)) {
     return false
   }
   if (GENERIC_STATUS_COMPLETION_HINTS.some(pattern => pattern.test(normalized))) {
     return false
   }
   return GENERIC_STATUS_PROGRESS_HINTS.some(pattern => pattern.test(normalized))
+}
+
+function hasGenericStatusBlocker(
+  text: string,
+  options?: { ignoreQuestionMark?: boolean },
+): boolean {
+  return GENERIC_STATUS_BLOCKERS.some(pattern => {
+    if (options?.ignoreQuestionMark && pattern.source === '\\?') {
+      return false
+    }
+    return pattern.test(text)
+  })
 }
 
 async function loadLatestMainTranscriptEntries(
@@ -263,6 +275,9 @@ function buildGenericAutoContinuePrompt(
     latestEntry?.type === 'assistant' &&
     hasAnyToolUse(latestEntry) &&
     assistantTextFromActiveTurn.length < GENERIC_STATUS_UPDATE_MAX_CHARS &&
+    !hasGenericStatusBlocker(assistantTextFromActiveTurn, {
+      ignoreQuestionMark: true,
+    }) &&
     !GENERIC_STATUS_COMPLETION_HINTS.some(pattern => pattern.test(assistantTextFromActiveTurn))
 
   if (

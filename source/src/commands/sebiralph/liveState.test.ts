@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { DEFAULT_CONFIG, DEFAULT_WORKFLOW } from '../../skills/sebiralph/types.js'
+import { getProjectDir } from '../../utils/sessionStoragePortable.js'
 import {
   maybeBuildAutoContinuePrompt,
   maybeBuildSebiRalphAutoContinuePrompt,
@@ -493,5 +494,49 @@ describe('sebiralph live state', () => {
       await rm(projectDir, { recursive: true, force: true })
       await rm(tempProjectPath, { recursive: true, force: true })
     }
+  })
+
+  test('maybeBuildAutoContinuePrompt skips active turns that still contain real blockers', async () => {
+    const tempProjectPath = await mkdtemp(join(tmpdir(), 'generic-auto-blocked-'))
+    const projectDir = getPersistedProjectDir(tempProjectPath)
+    const transcriptPath = join(projectDir, 'session-generic-blocked.jsonl')
+    await mkdir(projectDir, { recursive: true })
+    await writeFile(
+      transcriptPath,
+      JSON.stringify({
+        type: 'assistant',
+        isSidechain: false,
+        message: {
+          content: [
+            { type: 'tool_use', name: 'Read' },
+            {
+              type: 'text',
+              text: 'I need your approval and API key to continue.',
+            },
+          ],
+        },
+      }) + '\n',
+      'utf8',
+    )
+
+    try {
+      const prompt = await maybeBuildAutoContinuePrompt(
+        tempProjectPath,
+        'session-generic-blocked',
+      )
+      expect(prompt).toBeNull()
+    } finally {
+      await rm(projectDir, { recursive: true, force: true })
+      await rm(tempProjectPath, { recursive: true, force: true })
+    }
+  })
+
+  test('getPersistedProjectDir matches the shared session-storage sanitizer for long paths', () => {
+    const longProjectPath =
+      '/tmp/' + 'very-long-project-path/'.repeat(16) + 'repo-name'
+
+    expect(getPersistedProjectDir(longProjectPath)).toBe(
+      getProjectDir(longProjectPath),
+    )
   })
 })

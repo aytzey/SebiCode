@@ -16,7 +16,10 @@ const defaultOutfile = path.join(versionRoot, 'dist', 'cli.js');
 const workspaceRoot = path.join(versionRoot, '.cache', 'workspace');
 const markerPath = path.join(workspaceRoot, '.prepared.json');
 const overlayStampPath = path.join(workspaceRoot, '.overlay-install.json');
-const builderVersion = 7;
+const builderVersion = 8;
+const overlayPackageInstallSpecs = new Map([
+  ['lru-cache', 'lru-cache@10.4.3'],
+]);
 
 const sourceExtensions = ['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs'];
 const assetExtensions = ['.md', '.txt'];
@@ -280,7 +283,10 @@ function prepareWorkspace(overlayPackages) {
 
 function ensureOverlayDependencies(packageNames) {
   const stamp = readJsonIfExists(overlayStampPath);
-  const desiredKey = JSON.stringify(packageNames);
+  const desiredKey = JSON.stringify({
+    packageNames,
+    installSpecs: packageNames.map(getOverlayInstallSpec),
+  });
   const allPresent = packageNames.every(packageName =>
     isDirectory(packageRootPath(path.join(workspaceRoot, 'node_modules'), packageName)),
   );
@@ -303,7 +309,7 @@ function ensureOverlayDependencies(packageNames) {
     '--no-audit',
     '--no-fund',
     '--legacy-peer-deps',
-    ...packageNames,
+    ...packageNames.map(getOverlayInstallSpec),
   ];
   const install = spawnSync('npm', installArgs, {
     cwd: workspaceRoot,
@@ -1282,6 +1288,10 @@ function writeWorkspacePackageJson(keepPaths) {
   if (!isFileContentEqual(packageJsonPath, packageJsonSource)) {
     fs.writeFileSync(packageJsonPath, packageJsonSource, 'utf8');
   }
+}
+
+function getOverlayInstallSpec(packageName) {
+  return overlayPackageInstallSpecs.get(packageName) ?? packageName;
 }
 
 function writeWorkspaceTsconfig(keepPaths) {

@@ -5,6 +5,7 @@ import { getPersistedProjectDir } from './liveState.js'
 import { findLatestSebiRalphRunForSession } from './liveState.js'
 
 export const SEBIRALPH_AUTO_CONTINUE_BUDGET = 12
+const AUTO_CONTINUE_LOOKBACK_ENTRY_COUNT = 16
 const GENERIC_STATUS_UPDATE_MAX_CHARS = 1400
 const GENERIC_STATUS_PROGRESS_HINTS = [
   /\bplan aşamasındayım\b/i,
@@ -123,20 +124,6 @@ function getAssistantText(entry: PersistedTranscriptEntry): string {
     .join('\n')
 }
 
-function hasAgentToolUse(entry: PersistedTranscriptEntry): boolean {
-  return Array.isArray(entry.message?.content)
-    ? entry.message!.content.some(
-        block =>
-          typeof block === 'object' &&
-          block !== null &&
-          'type' in block &&
-          'name' in block &&
-          block.type === 'tool_use' &&
-          block.name === 'Agent',
-      )
-    : false
-}
-
 function hasAnyToolUse(entry: PersistedTranscriptEntry): boolean {
   return Array.isArray(entry.message?.content)
     ? entry.message!.content.some(
@@ -243,10 +230,41 @@ async function loadLatestMainTranscriptEntries(
   return []
 }
 
+function getTranscriptTailContext(entries: PersistedTranscriptEntry[]): {
+  latestEntry: PersistedTranscriptEntry | undefined
+  trailingToolResultEntries: PersistedTranscriptEntry[]
+  precedingAssistantEntry: PersistedTranscriptEntry | undefined
+} {
+  const latestEntry = entries[0]
+  const trailingToolResultEntries: PersistedTranscriptEntry[] = []
+
+  for (const entry of entries) {
+    if (!isToolResultUserEntry(entry)) {
+      break
+    }
+    trailingToolResultEntries.push(entry)
+  }
+
+  const precedingAssistantCandidate = entries[trailingToolResultEntries.length]
+
+  return {
+    latestEntry,
+    trailingToolResultEntries,
+    precedingAssistantEntry:
+      precedingAssistantCandidate?.type === 'assistant'
+        ? precedingAssistantCandidate
+        : undefined,
+  }
+}
+
 function buildGenericAutoContinuePrompt(
-  latestEntry: PersistedTranscriptEntry | undefined,
-  previousEntry: PersistedTranscriptEntry | undefined,
+  entries: PersistedTranscriptEntry[],
 ): string | null {
+  const {
+    latestEntry,
+    trailingToolResultEntries,
+    precedingAssistantEntry,
+  } = getTranscriptTailContext(entries)
   const latestAssistantText =
     latestEntry?.type === 'assistant' && !hasToolUse(latestEntry)
       ? getAssistantText(latestEntry)
@@ -256,12 +274,11 @@ function buildGenericAutoContinuePrompt(
     latestEntry?.type === 'assistant' &&
     !hasToolUse(latestEntry) &&
     isLikelyGenericStatusUpdate(latestAssistantText)
-  // Path 2: pending tool result waiting for model to process
+  // Path 2: pending tool result batch waiting for model to process
   const canContinueFromUnresolvedToolResult =
-    latestEntry?.type === 'user' &&
-    isToolResultUserEntry(latestEntry) &&
-    previousEntry?.type === 'assistant' &&
-    hasAnyToolUse(previousEntry)
+    trailingToolResultEntries.length > 0 &&
+    precedingAssistantEntry !== undefined &&
+    hasAnyToolUse(precedingAssistantEntry)
   // Path 3: assistant was actively working (had tool calls) and hasn't
   // signalled completion — continue even if text contains a question mark.
   // This handles mid-workflow pauses where the model asks an optional
@@ -316,22 +333,26 @@ export async function maybeBuildSebiRalphAutoContinuePrompt(
     return null
   }
 
-  const [latestEntry, previousEntry] = await loadLatestMainTranscriptEntries(
+  const entries = await loadLatestMainTranscriptEntries(
     projectPath,
     sessionId,
+    AUTO_CONTINUE_LOOKBACK_ENTRY_COUNT,
   )
+  const {
+    latestEntry,
+    trailingToolResultEntries,
+    precedingAssistantEntry,
+  } = getTranscriptTailContext(entries)
   const canContinueFromAssistantText =
     latestEntry?.type === 'assistant' &&
     !hasToolUse(latestEntry) &&
     getAssistantText(latestEntry).trim().length > 0
-  const canContinueFromAgentToolResult =
-    !latestEntry?.isMeta &&
-    latestEntry?.type === 'user' &&
-    isToolResultUserEntry(latestEntry) &&
-    previousEntry?.type === 'assistant' &&
-    hasAgentToolUse(previousEntry)
+  const canContinueFromToolResultBatch =
+    trailingToolResultEntries.length > 0 &&
+    precedingAssistantEntry !== undefined &&
+    hasAnyToolUse(precedingAssistantEntry)
 
-  if (!canContinueFromAssistantText && !canContinueFromAgentToolResult) {
+  if (!canContinueFromAssistantText && !canContinueFromToolResultBatch) {
     return null
   }
 
@@ -355,9 +376,10 @@ export async function maybeBuildAutoContinuePrompt(
     return sebiRalphPrompt
   }
 
-  const [latestEntry, previousEntry] = await loadLatestMainTranscriptEntries(
+  const entries = await loadLatestMainTranscriptEntries(
     projectPath,
     sessionId,
+    AUTO_CONTINUE_LOOKBACK_ENTRY_COUNT,
   )
-  return buildGenericAutoContinuePrompt(latestEntry, previousEntry)
+  return buildGenericAutoContinuePrompt(entries)
 }

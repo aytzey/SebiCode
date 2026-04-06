@@ -237,7 +237,7 @@ describe('sebiralph live state', () => {
     }
   })
 
-  test('maybeBuildSebiRalphAutoContinuePrompt skips an ordinary user tool result without a preceding Agent call', async () => {
+  test('maybeBuildSebiRalphAutoContinuePrompt resumes a regular tool result without requiring an Agent call', async () => {
     const tempProjectPath = await mkdtemp(join(tmpdir(), 'sebiralph-auto-user-'))
     const projectDir = getPersistedProjectDir(tempProjectPath)
     const runsDir = join(projectDir, 'sebiralph-runs')
@@ -280,7 +280,76 @@ describe('sebiralph live state', () => {
         tempProjectPath,
         run.sessionId,
       )
-      expect(prompt).toBeNull()
+      expect(prompt).toContain(`run ${run.id}`)
+    } finally {
+      await rm(projectDir, {
+        recursive: true,
+        force: true,
+      })
+      await rm(tempProjectPath, { recursive: true, force: true })
+    }
+  })
+
+  test('maybeBuildSebiRalphAutoContinuePrompt resumes when a trailing tool-result batch follows tool calls', async () => {
+    const tempProjectPath = await mkdtemp(join(tmpdir(), 'sebiralph-auto-batch-'))
+    const projectDir = getPersistedProjectDir(tempProjectPath)
+    const runsDir = join(projectDir, 'sebiralph-runs')
+    await mkdir(runsDir, { recursive: true })
+
+    const run = buildRun({
+      id: 'run-auto-batch',
+      sessionId: 'session-auto-batch',
+      projectPath: tempProjectPath,
+      phase: 'evaluate',
+      status: 'active',
+    })
+    const runPath = join(runsDir, `${run.id}.json`)
+    const transcriptPath = join(projectDir, `${run.sessionId}.jsonl`)
+    await writeFile(runPath, JSON.stringify(run, null, 2) + '\n', 'utf8')
+    await writeFile(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: false,
+          message: {
+            stop_reason: 'end_turn',
+            content: [{ type: 'tool_use', name: 'Read' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: false,
+          message: {
+            stop_reason: 'end_turn',
+            content: [{ type: 'tool_use', name: 'Read' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          isSidechain: false,
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'call_read_1' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          isSidechain: false,
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'call_read_2' }],
+          },
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    )
+
+    try {
+      const prompt = await maybeBuildSebiRalphAutoContinuePrompt(
+        tempProjectPath,
+        run.sessionId,
+      )
+      expect(prompt).toContain(`run ${run.id}`)
+      expect(prompt).toContain('Do not emit another status-only update')
     } finally {
       await rm(projectDir, {
         recursive: true,
@@ -401,6 +470,60 @@ describe('sebiralph live state', () => {
       const prompt = await maybeBuildAutoContinuePrompt(
         tempProjectPath,
         'session-generic-tool',
+      )
+      expect(prompt).toContain('Automatic keep-alive continuation.')
+    } finally {
+      await rm(projectDir, { recursive: true, force: true })
+      await rm(tempProjectPath, { recursive: true, force: true })
+    }
+  })
+
+  test('maybeBuildAutoContinuePrompt resumes generic trailing tool-result batches', async () => {
+    const tempProjectPath = await mkdtemp(join(tmpdir(), 'generic-auto-tool-batch-'))
+    const projectDir = getPersistedProjectDir(tempProjectPath)
+    const transcriptPath = join(projectDir, 'session-generic-tool-batch.jsonl')
+    await mkdir(projectDir, { recursive: true })
+    await writeFile(
+      transcriptPath,
+      [
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: false,
+          message: {
+            stop_reason: 'end_turn',
+            content: [{ type: 'tool_use', name: 'Read' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: false,
+          message: {
+            stop_reason: 'end_turn',
+            content: [{ type: 'tool_use', name: 'Read' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          isSidechain: false,
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'call_read_1' }],
+          },
+        }),
+        JSON.stringify({
+          type: 'user',
+          isSidechain: false,
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'call_read_2' }],
+          },
+        }),
+      ].join('\n') + '\n',
+      'utf8',
+    )
+
+    try {
+      const prompt = await maybeBuildAutoContinuePrompt(
+        tempProjectPath,
+        'session-generic-tool-batch',
       )
       expect(prompt).toContain('Automatic keep-alive continuation.')
     } finally {

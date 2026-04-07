@@ -284,15 +284,45 @@ FIXES NEEDED:
 
 Parse the response:
 - If contains \`VERDICT: APPROVED\` (case-insensitive) → proceed to Phase 4
-- If contains \`VERDICT: REJECTED\` → extract fixes after "FIXES NEEDED:", then spawn revision:
+- If contains \`VERDICT: REJECTED\` → extract fixes after "FIXES NEEDED:", then spawn revision.
+
+**CACHE-CRITICAL REVISION RULE.** The revision agent's prompt MUST start with the EXACT SAME prefix as the original planner prompt — same {TASK}, same {CODEBASE_CONTEXT}, same {DELIVERY_CONTEXT}, same Role Assignments, same INSTRUCTIONS / STEPS / END GOAL / NARROWING / SELF-CHECK / OUTPUT FORMAT sections, byte-for-byte. Only an additional REVISION block is appended at the very end. This lets the Anthropic prompt cache reuse every byte of the codebase context across iterations and only pay for the small revision tail.
+
+**Do NOT** strip the codebase context out of the revision prompt — the bytes must match the initial planner call so the cache hits.
+
+Spawn revision:
 
 \`\`\`
 Agent({
   description: "ralph-planner: revise plan (iteration N/${workflow.maxPlanIterations})",
-  prompt: "ROLE:\\nYou are the Planner revising a rejected SebiRalph plan.\\n\\nCONTEXT:\\nEvaluator rejected your plan (iteration N/${workflow.maxPlanIterations}).\\n\\nDelivery Context\\n{DELIVERY_CONTEXT}\\n\\nINITIAL OUTPUT\\n{PLAN_JSON}\\n\\nFEEDBACK\\n{EVALUATOR_RESPONSE}\\n\\nFEEDBACK DIMENSIONS:\\n1. Hard gate compliance\\n2. Ownership and wave structure\\n3. Verification coverage expectations\\n4. Deploy/runtime verification coverage\\n5. Execution clarity\\n\\nREFINEMENT RULES:\\n- Address every failed gate and every fix request\\n- Preserve valid structure and valid task details instead of rewriting everything blindly\\n- Remove contradictions, overlaps, and missing ownership explicitly\\n- If feedback says verification is missing, add or update a task that owns the relevant test files and names that coverage explicitly; do not rely on source-file acceptance alone\\n- If task A depends on task B, task A cannot remain in the same wave as task B\\n- Do NOT introduce new unsupported assumptions or placeholder fields\\n- Return the final revised JSON only, with no commentary or fences\\n- The first character of your response must be { and the last character must be }\\n- If you emit backticks, markdown fences, or any text before/after the JSON object, the revision is invalid\\n- Preparatory notes like 'The corrected plan is below' or any sentence before the opening { are invalid\\n\\nOutput ONLY the revised JSON plan.",
+  prompt: <SAME PLANNER PROMPT TEMPLATE FROM PHASE 2, with this REVISION block appended at the very end>,
   provider: "${config.planner.provider}",
   model: "opus"
 })
+\`\`\`
+
+Append this block at the very end of the prompt (after \`OUTPUT FORMAT\` / before the final \`Output ONLY the JSON object.\` line) — keeping every byte before it identical to the initial call:
+
+\`\`\`
+REVISION:
+You are revising a rejected plan (iteration N/${workflow.maxPlanIterations}).
+Reuse every byte of the prefix above as the cached context for this revision; do not re-derive it.
+
+PREVIOUS PLAN
+{PLAN_JSON}
+
+EVALUATOR FEEDBACK
+{EVALUATOR_RESPONSE}
+
+REFINEMENT RULES:
+- Address every failed gate and every fix request
+- Preserve valid structure and valid task details instead of rewriting everything blindly
+- Remove contradictions, overlaps, and missing ownership explicitly
+- If feedback says verification is missing, add or update a task that owns the relevant test files and names that coverage explicitly; do not rely on source-file acceptance alone
+- If task A depends on task B, task A cannot remain in the same wave as task B
+- Do NOT introduce new unsupported assumptions or placeholder fields
+- Return the final revised JSON only, with no commentary or fences
+- The first character of your response must be { and the last character must be }
 \`\`\`
 
 Re-evaluate with the revised plan. **Max ${workflow.maxPlanIterations} iterations.**

@@ -49,8 +49,13 @@ describe('buildHarnessPrompt', () => {
     expect(prompt).toContain('The first character of your response must be { and the last character must be }')
     expect(prompt).toContain('If you emit backticks, markdown fences, or any text before/after the JSON object, the response is invalid')
     expect(prompt).toContain('any sentence before the opening { are invalid')
-    expect(prompt).toContain('If you emit backticks, markdown fences, or any text before/after the JSON object, the revision is invalid')
-    expect(prompt).toContain("The corrected plan is below")
+    // Cache-friendly revision contract: revision agent must reuse the same
+    // planner prompt prefix byte-for-byte and only append a REVISION block.
+    expect(prompt).toContain('CACHE-CRITICAL REVISION RULE')
+    expect(prompt).toContain('Reuse every byte of the prefix above as the cached context for this revision')
+    expect(prompt).toContain('REVISION:')
+    expect(prompt).toContain('PREVIOUS PLAN')
+    expect(prompt).toContain('EVALUATOR FEEDBACK')
     expect(prompt).toContain('These subagents are dispatched executors inside an already-approved harness run.')
     expect(prompt).toContain('Helpful execution, framework, domain, UI, and audit skills are allowed when they materially accelerate the assigned work.')
     expect(prompt).toContain("If a surfaced skill says it should be skipped for dispatched subagents or contains `<SUBAGENT-STOP>`, skip it and keep executing the assigned task.")

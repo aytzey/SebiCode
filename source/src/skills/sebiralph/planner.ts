@@ -16,12 +16,26 @@ function formatDeliveryContext(deliveryContext?: string): string {
   return trimmed && trimmed.length > 0 ? trimmed : 'Not provided'
 }
 
+export type PlannerRevisionInput = {
+  iteration: number
+  maxIterations: number
+  previousPlan: string
+  evaluatorFeedback: string
+}
+
 export function buildPlannerPrompt(
   userTask: string,
   config: RalphConfig,
   codebaseContext: string,
   deliveryContext?: string,
+  revision?: PlannerRevisionInput,
 ): string {
+  // Cache-first ordering: every byte before the REVISION block is identical
+  // for both the initial call and every revision call. The Anthropic prompt
+  // cache hashes from the start of the message, so keeping codebase context,
+  // delivery context, role assignments, instructions and self-checks in a
+  // stable prefix means revisions reuse the cached prefix and only the trailing
+  // REVISION block (a few hundred bytes) is uncached.
   return `ROLE:
 You are the Planner for SebiRalph. Create a detailed implementation plan that is execution-ready, validator-safe, and evaluator-safe.
 
@@ -82,7 +96,27 @@ SELF-CHECK BEFORE RETURNING:
 
 OUTPUT FORMAT
 ${PLAN_JSON_SCHEMA_PROMPT}
+${revision ? `
+REVISION:
+You are revising a rejected plan (iteration ${revision.iteration}/${revision.maxIterations}).
+Reuse every byte of the prefix above as the cached context for this revision; do not re-derive it.
 
+PREVIOUS PLAN
+${revision.previousPlan}
+
+EVALUATOR FEEDBACK
+${revision.evaluatorFeedback}
+
+REFINEMENT RULES:
+- Address every failed gate and every fix request
+- Preserve valid structure and valid task details instead of rewriting everything blindly
+- Remove contradictions, overlaps, and missing ownership explicitly
+- If feedback says verification is missing, add or update a task that owns the relevant test files and names that coverage explicitly; do not rely on source-file acceptance alone
+- If task A depends on task B, task A cannot remain in the same wave as task B
+- Do NOT introduce new unsupported assumptions or placeholder fields
+- Return the final revised JSON only, with no commentary or fences
+- The first character of your response must be { and the last character must be }
+` : ''}
 Output ONLY the JSON object.`
 }
 
@@ -144,46 +178,33 @@ export function parseEvaluatorVerdict(response: string): { approved: boolean; fi
   return { approved, fixes, rawResponse: response }
 }
 
+/**
+ * Build a planner revision prompt.
+ *
+ * Important: revisions reuse the EXACT same prefix bytes as the original
+ * planner call (codebase context, delivery context, role assignments,
+ * instructions, self-checks). Only the trailing REVISION block differs,
+ * which lets the Anthropic prompt cache reuse the cached prefix and skip
+ * re-uploading the codebase context every iteration.
+ *
+ * Callers MUST pass the SAME `userTask`, `config`, and `codebaseContext`
+ * they passed to `buildPlannerPrompt` for the initial attempt — otherwise
+ * the cache prefix changes and the revision pays full token cost again.
+ */
 export function buildRevisionPrompt(
+  userTask: string,
+  config: RalphConfig,
+  codebaseContext: string,
   originalPlan: string,
   evaluatorFeedback: string,
   iteration: number,
   deliveryContext?: string,
   maxIterations = 3,
 ): string {
-  return `ROLE:
-You are the Planner revising a rejected SebiRalph plan.
-
-CONTEXT:
-Evaluator rejected your plan (iteration ${iteration}/${maxIterations}).
-
-Delivery Context
-${formatDeliveryContext(deliveryContext)}
-
-INITIAL OUTPUT
-${originalPlan}
-
-FEEDBACK
-${evaluatorFeedback}
-
-FEEDBACK DIMENSIONS:
-1. Hard gate compliance
-2. Ownership and wave structure
-3. Verification coverage expectations
-4. Deploy/runtime verification coverage
-5. Execution clarity
-
-REFINEMENT RULES:
-- Address every failed gate and every fix request
-- Preserve valid structure and valid task details instead of rewriting everything blindly
-- Remove contradictions, overlaps, and missing ownership explicitly
-- If feedback says verification is missing, add or update a task that owns the relevant test files and names that coverage explicitly; do not rely on source-file acceptance alone
-- If task A depends on task B, task A cannot remain in the same wave as task B
-- Do NOT introduce new unsupported assumptions or placeholder fields
-- Return the final revised JSON only, with no commentary or fences
-- The first character of your response must be { and the last character must be }
-- If you emit backticks, markdown fences, or any text before/after the JSON object, the revision is invalid
-- Preparatory notes like "The corrected plan is below" or any sentence before the opening { are invalid
-
-Output ONLY the revised JSON plan.`
+  return buildPlannerPrompt(userTask, config, codebaseContext, deliveryContext, {
+    iteration,
+    maxIterations,
+    previousPlan: originalPlan,
+    evaluatorFeedback,
+  })
 }

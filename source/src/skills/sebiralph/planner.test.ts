@@ -52,20 +52,59 @@ describe('planner prompts', () => {
 
   test('revision prompt follows feedback-driven refinement contract', () => {
     const prompt = buildRevisionPrompt(
+      'Add session-based auth',
+      DEFAULT_CONFIG,
+      'Next.js app with Vitest',
       '{"title":"Auth"}',
       'VERDICT: REJECTED\nFIXES NEEDED:\n- add wave 0 contract task',
       2,
       'Verify via `npm run smoke`',
     )
 
-    expect(prompt).toContain('FEEDBACK DIMENSIONS:')
+    expect(prompt).toContain('REVISION:')
+    expect(prompt).toContain('iteration 2/3')
+    expect(prompt).toContain('PREVIOUS PLAN')
+    expect(prompt).toContain('{"title":"Auth"}')
+    expect(prompt).toContain('EVALUATOR FEEDBACK')
+    expect(prompt).toContain('add wave 0 contract task')
     expect(prompt).toContain('Preserve valid structure and valid task details instead of rewriting everything blindly')
     expect(prompt).toContain('add or update a task that owns the relevant test files and names that coverage explicitly')
     expect(prompt).toContain('task A depends on task B')
     expect(prompt).toContain('Return the final revised JSON only, with no commentary or fences')
     expect(prompt).toContain('The first character of your response must be { and the last character must be }')
-    expect(prompt).toContain('If you emit backticks, markdown fences, or any text before/after the JSON object, the revision is invalid')
-    expect(prompt).toContain('The corrected plan is below')
-    expect(prompt).toContain('Output ONLY the revised JSON plan.')
+    expect(prompt).toContain('Output ONLY the JSON object.')
+  })
+
+  test('revision prompt shares the same cacheable prefix as the initial planner prompt', () => {
+    const userTask = 'Add session-based auth'
+    const codebaseContext = 'Next.js app with Vitest, lots of context here that should be cached across plan iterations.'
+    const deliveryContext = 'Verify via `npm run smoke`'
+    const initial = buildPlannerPrompt(
+      userTask,
+      DEFAULT_CONFIG,
+      codebaseContext,
+      deliveryContext,
+    )
+    const revision = buildRevisionPrompt(
+      userTask,
+      DEFAULT_CONFIG,
+      codebaseContext,
+      '{"title":"Auth"}',
+      'FIXES NEEDED:\n- add wave 0 contract task',
+      2,
+      deliveryContext,
+    )
+
+    // The initial prompt ends with the JSON-only directive. The revision must
+    // start with the SAME prefix (codebase context + delivery context + role
+    // assignments + instructions + self-checks) so the Anthropic prompt cache
+    // hashes the cached prefix and only the trailing REVISION block is fresh.
+    const sharedPrefixIndex = revision.indexOf('REVISION:')
+    expect(sharedPrefixIndex).toBeGreaterThan(0)
+    const sharedPrefix = revision.slice(0, sharedPrefixIndex)
+    expect(initial.startsWith(sharedPrefix)).toBe(true)
+    // The shared prefix must include the codebase context payload — that is
+    // the entire point of the cache reuse.
+    expect(sharedPrefix).toContain(codebaseContext)
   })
 })

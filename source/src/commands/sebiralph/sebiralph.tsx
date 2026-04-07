@@ -1,5 +1,6 @@
 import type { UUID } from 'crypto'
 import { getSessionId } from '../../bootstrap/state.js'
+import type { AppState } from '../../state/AppStateStore.js'
 import {
   DEFAULT_CONFIG,
   DEFAULT_WORKFLOW,
@@ -8,6 +9,31 @@ import {
 import { buildHarnessPrompt } from '../../skills/sebiralph/orchestrator.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import { getLastSessionLog } from '../../utils/sessionStorage.js'
+
+// SebiRalph orchestrator must always run on Claude Sonnet regardless of how
+// the process was launched (sebi=Codex vs sebi-claude=Opus). Per-role workers,
+// planner, evaluator, etc still pick their own provider via the Agent tool's
+// `provider` field, so this only steers the main loop / orchestrator turns.
+const ORCHESTRATOR_MODEL = 'sonnet'
+const ORCHESTRATOR_PROVIDER: 'anthropic' | 'openai' = 'anthropic'
+
+function pinOrchestratorRouting(
+  setAppState: (updater: (prev: AppState) => AppState) => void,
+): void {
+  setAppState(prev => {
+    if (
+      prev.mainLoopModel === ORCHESTRATOR_MODEL &&
+      prev.mainLoopProviderOverride === ORCHESTRATOR_PROVIDER
+    ) {
+      return prev
+    }
+    return {
+      ...prev,
+      mainLoopModel: ORCHESTRATOR_MODEL,
+      mainLoopProviderOverride: ORCHESTRATOR_PROVIDER,
+    }
+  })
+}
 import {
   buildResumePrompt,
   formatRunSummary,
@@ -70,6 +96,9 @@ async function resumeRunSession(
       fullLog,
       'slash_command_session_id',
     )
+    if (shouldQuery) {
+      pinOrchestratorRouting(context.setAppState)
+    }
     onDone(undefined, {
       display: 'skip',
       shouldQuery,
@@ -110,6 +139,9 @@ async function continueExistingRun(
     : manualLoopExtension
     ? 'Granting the SebiRalph loop run one additional refinement budget slot.'
     : 'Reusing existing SebiRalph run for this task.'
+  if (shouldQuery) {
+    pinOrchestratorRouting(context.setAppState)
+  }
   onDone(`${intro}\n\n${formatRunSummary(nextLookup.run)}`, {
     shouldQuery,
     metaMessages: shouldQuery
@@ -140,6 +172,9 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     }
 
     const shouldQuery = shouldAutoContinueRun(lookup.run)
+    if (shouldQuery) {
+      pinOrchestratorRouting(context.setAppState)
+    }
     onDone(formatRunSummary(lookup.run), {
       shouldQuery,
       metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,
@@ -161,6 +196,9 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     }
 
     const shouldQuery = shouldAutoContinueRun(lookup.run)
+    if (shouldQuery) {
+      pinOrchestratorRouting(context.setAppState)
+    }
     onDone(formatRunSummary(lookup.run), {
       shouldQuery,
       metaMessages: shouldQuery ? [buildResumePrompt(lookup.run)] : undefined,
@@ -218,6 +256,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     sessionId: run.sessionId,
   })
 
+  pinOrchestratorRouting(context.setAppState)
   onDone(formatRunSummary(run), {
     shouldQuery: true,
     metaMessages: [harnessPrompt],

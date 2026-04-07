@@ -91,6 +91,12 @@ export type AppState = DeepImmutable<{
   verbose: boolean
   mainLoopModel: ModelSetting
   mainLoopModelForSession: ModelSetting
+  // Per-session orchestrator provider override. Set by /sebiralph so the
+  // harness orchestrator always runs on Claude Sonnet regardless of how the
+  // process was launched (sebi vs sebi-claude). Subagent provider routing
+  // (Agent({ provider: 'openai' | 'anthropic' })) is unaffected and still
+  // honors per-call overrides for workers/evaluator/etc.
+  mainLoopProviderOverride: 'anthropic' | 'openai' | null
   statusLineText: string | undefined
   expandedView: 'none' | 'tasks' | 'teammates'
   isBriefOnly: boolean
@@ -472,6 +478,7 @@ export function getDefaultAppState(): AppState {
     verbose: false,
     mainLoopModel: null, // alias, full name (as with --model or env var), or null (default)
     mainLoopModelForSession: null,
+    mainLoopProviderOverride: null,
     statusLineText: undefined,
     expandedView: 'none',
     isBriefOnly: false,

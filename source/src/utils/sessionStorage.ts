@@ -31,6 +31,7 @@ import {
   switchSession,
 } from '../bootstrap/state.js'
 import { builtInCommandNames } from '../commands.js'
+import { syncSebiRalphRunStateFromTranscriptEntry } from '../commands/sebiralph/liveState.js'
 import { COMMAND_NAME_TAG, TICK_TAG } from '../constants/xml.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import * as sessionIngress from '../services/api/sessionIngress.js'
@@ -1243,6 +1244,9 @@ class Project {
         if (isAgentSidechain || isNewUuid) {
           // Enqueue write — appendToFile handles ENOENT by creating directories
           void this.enqueueWrite(targetFile, entry)
+          if (entry.type === 'assistant' && !isAgentSidechain) {
+            void syncSebiRalphRunStateFromTranscriptEntry(entry)
+          }
 
           if (!isAgentSidechain) {
             // messageSet is main-file-authoritative. Sidechain entries go to a

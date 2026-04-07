@@ -30,6 +30,7 @@ import { useTerminalNotification } from '../ink/useTerminalNotification.js';
 import { hasCursorUpViewportYankBug } from '../ink/terminal.js';
 import { createFileStateCacheWithSizeLimit, mergeFileStateCaches, READ_FILE_STATE_CACHE_SIZE } from '../utils/fileStateCache.js';
 import { updateLastInteractionTime, getLastInteractionTime, getOriginalCwd, getProjectRoot, getSessionId, switchSession, setCostStateForRestore, getTurnHookDurationMs, getTurnHookCount, resetTurnHookDuration, getTurnToolDurationMs, getTurnToolCount, resetTurnToolDuration, getTurnClassifierDurationMs, getTurnClassifierCount, resetTurnClassifierDuration } from '../bootstrap/state.js';
+import { maybeBuildAutoContinuePrompt, SEBIRALPH_AUTO_CONTINUE_BUDGET } from '../commands/sebiralph/autocontinue.js';
 import { asSessionId, asAgentId } from '../types/ids.js';
 import { logForDebugging } from '../utils/debug.js';
 import { QueryGuard } from '../utils/QueryGuard.js';
@@ -2915,7 +2916,35 @@ export function REPL({
           return;
         }
       }
-      await onQueryImpl(latestMessages, newMessages, abortController, shouldQuery, additionalAllowedTools, mainLoopModelParam, effort);
+      let pendingMessages = newMessages;
+      let pendingShouldQuery = shouldQuery;
+      let pendingAllowedTools = additionalAllowedTools;
+      let remainingAutoContinue = SEBIRALPH_AUTO_CONTINUE_BUDGET;
+
+      while (true) {
+        await onQueryImpl(messagesRef.current, pendingMessages, abortController, pendingShouldQuery, pendingAllowedTools, mainLoopModelParam, effort);
+        if (!pendingShouldQuery || abortController.signal.aborted || remainingAutoContinue <= 0) {
+          break;
+        }
+
+        const autoContinuePrompt = await maybeBuildAutoContinuePrompt(getOriginalCwd(), getSessionId());
+        if (!autoContinuePrompt) {
+          break;
+        }
+
+        pendingMessages = [createUserMessage({
+          content: autoContinuePrompt,
+          isMeta: true
+        })];
+        // Add auto-continue user message to state so messagesRef.current
+        // includes it before the next onQueryImpl call. Without this,
+        // messagesRef.current ends with the assistant's response, causing
+        // a prefill error on models that don't support it (e.g. Opus 4.6).
+        setMessages(old => [...old, ...pendingMessages]);
+        pendingShouldQuery = true;
+        pendingAllowedTools = [];
+        remainingAutoContinue -= 1;
+      }
     } finally {
       // queryGuard.end() atomically checks generation and transitions
       // running→idle. Returns false if a newer query owns the guard

@@ -6,6 +6,10 @@ import {
   getSessionId,
   isSessionPersistenceDisabled,
 } from 'src/bootstrap/state.js'
+import {
+  maybeBuildAutoContinuePrompt,
+  SEBIRALPH_AUTO_CONTINUE_BUDGET,
+} from 'src/commands/sebiralph/autocontinue.js'
 import type {
   PermissionMode,
   SDKCompactBoundaryMessage,
@@ -208,7 +212,12 @@ export class QueryEngine {
 
   async *submitMessage(
     prompt: string | ContentBlockParam[],
-    options?: { uuid?: string; isMeta?: boolean },
+    options?: {
+      uuid?: string
+      isMeta?: boolean
+      suppressSystemInit?: boolean
+      autoContinueBudget?: number
+    },
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const {
       cwd,
@@ -239,6 +248,8 @@ export class QueryEngine {
     setCwd(cwd)
     const persistSession = !isSessionPersistenceDisabled()
     const startTime = Date.now()
+    const autoContinueBudget =
+      options?.autoContinueBudget ?? SEBIRALPH_AUTO_CONTINUE_BUDGET
 
     // Wrap canUseTool to track permission denials
     const wrappedCanUseTool: CanUseToolFn = async (
@@ -485,7 +496,19 @@ export class QueryEngine {
       },
     }))
 
-    const mainLoopModel = modelFromUserInput ?? initialMainLoopModel
+    // Read the latest mainLoopModel from app state — slash commands like
+    // /sebiralph and /model can mutate it during processUserInput. The local
+    // initialMainLoopModel snapshot above is stale by the time we reach here.
+    const postSlashAppState = getAppState()
+    const mainLoopModel =
+      modelFromUserInput ??
+      (postSlashAppState.mainLoopModel
+        ? parseUserSpecifiedModel(postSlashAppState.mainLoopModel)
+        : initialMainLoopModel)
+    // Per-session orchestrator provider override (set by /sebiralph). Falls
+    // back to env-var/file routing in client.ts when null.
+    const mainLoopProviderOverride =
+      postSlashAppState.mainLoopProviderOverride ?? undefined
 
     // Recreate after processing the prompt to pick up updated messages and
     // model (from slash commands).
@@ -510,6 +533,9 @@ export class QueryEngine {
         theme: resolveThemeSetting(getGlobalConfig().theme),
         agentDefinitions: { activeAgents: agents, allAgents: [] },
         maxBudgetUsd,
+        ...(mainLoopProviderOverride
+          ? { providerOverride: mainLoopProviderOverride }
+          : {}),
       },
       getAppState,
       setAppState,
@@ -537,18 +563,20 @@ export class QueryEngine {
     ])
     headlessProfilerCheckpoint('after_skills_plugins')
 
-    yield buildSystemInitMessage({
-      tools,
-      mcpClients,
-      model: mainLoopModel,
-      permissionMode: initialAppState.toolPermissionContext
-        .mode as PermissionMode, // TODO: avoid the cast
-      commands,
-      agents,
-      skills,
-      plugins: enabledPlugins,
-      fastMode: initialAppState.fastMode,
-    })
+    if (!options?.suppressSystemInit) {
+      yield buildSystemInitMessage({
+        tools,
+        mcpClients,
+        model: mainLoopModel,
+        permissionMode: initialAppState.toolPermissionContext
+          .mode as PermissionMode, // TODO: avoid the cast
+        commands,
+        agents,
+        skills,
+        plugins: enabledPlugins,
+        fastMode: initialAppState.fastMode,
+      })
+    }
 
     // Record when system message is yielded for headless latency tracking
     headlessProfilerCheckpoint('system_message_yielded')
@@ -1130,6 +1158,25 @@ export class QueryEngine {
         textResult = lastContent.text
       }
       isApiError = Boolean(result.isApiErrorMessage)
+    }
+
+    if (
+      autoContinueBudget > 0 &&
+      !isApiError &&
+      lastStopReason === 'end_turn'
+    ) {
+      const autoContinuePrompt = await maybeBuildAutoContinuePrompt(
+        cwd,
+        getSessionId(),
+      )
+      if (autoContinuePrompt) {
+        yield* this.submitMessage(autoContinuePrompt, {
+          isMeta: true,
+          suppressSystemInit: true,
+          autoContinueBudget: autoContinueBudget - 1,
+        })
+        return
+      }
     }
 
     yield {

@@ -750,6 +750,14 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
     switch (message.type) {
       case 'assistant': {
         isNewChain = isNewChain || message.message.content.length > 1
+        const codexEncryptedReasoning = (
+          message as AssistantMessage & {
+            codexEncryptedReasoning?: ReadonlyArray<{
+              id: string
+              encrypted_content: unknown
+            }>
+          }
+        ).codexEncryptedReasoning
         return message.message.content.map((_, index) => {
           const uuid = isNewChain
             ? deriveUUID(message.uuid, index)
@@ -769,6 +777,9 @@ export function normalizeMessages(messages: Message[]): NormalizedMessage[] {
             error: message.error,
             isApiErrorMessage: message.isApiErrorMessage,
             advisorModel: message.advisorModel,
+            ...(codexEncryptedReasoning?.length && {
+              codexEncryptedReasoning,
+            }),
           } as NormalizedAssistantMessage
         })
       }

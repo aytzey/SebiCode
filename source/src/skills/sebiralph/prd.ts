@@ -6,6 +6,37 @@ export function hasExplicitTestAcceptanceCheck(task: PRDTask): boolean {
   return task.acceptanceChecks.some(check => TEST_ACCEPTANCE_PATTERN.test(check))
 }
 
+function normalizeOwnedPath(path: string): string {
+  return path
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^\.\//, '')
+}
+
+function toOwnedPathPrefix(path: string): string {
+  const normalized = normalizeOwnedPath(path)
+  return normalized.endsWith('/') ? normalized : `${normalized}/`
+}
+
+export function ownedPathsOverlap(left: string, right: string): boolean {
+  const normalizedLeft = normalizeOwnedPath(left)
+  const normalizedRight = normalizeOwnedPath(right)
+
+  if (!normalizedLeft || !normalizedRight) {
+    return false
+  }
+
+  if (normalizedLeft === normalizedRight) {
+    return true
+  }
+
+  return (
+    normalizedLeft.startsWith(toOwnedPathPrefix(normalizedRight)) ||
+    normalizedRight.startsWith(toOwnedPathPrefix(normalizedLeft))
+  )
+}
+
 export function renderPlanAsMarkdown(plan: RalphPlan): string {
   const lines: string[] = [`# ${plan.title}`, '', plan.summary, '', '## Shared Contracts', '']
   for (const [name, path] of Object.entries(plan.sharedContracts)) {
@@ -65,9 +96,10 @@ export function validatePlan(plan: RalphPlan): { valid: boolean; errors: string[
       const task = plan.tasks.find(t => t.id === taskId)
       if (!task) continue
       for (const path of task.ownedPaths) {
-        // Check exact match and prefix overlaps (e.g. "src/" and "src/api/")
+        // Mirror the path-ownership gate: exact matches conflict, and directory
+        // ownership only overlaps when one path is nested under the other.
         for (const existing of pathOwners) {
-          if (existing.path === path || path.startsWith(existing.path) || existing.path.startsWith(path)) {
+          if (ownedPathsOverlap(existing.path, path)) {
             errors.push(`Wave ${wave.wave}: path \`${path}\` (${taskId}) overlaps with \`${existing.path}\` (${existing.taskId})`)
           }
         }
@@ -77,9 +109,6 @@ export function validatePlan(plan: RalphPlan): { valid: boolean; errors: string[
   }
   for (const task of plan.tasks) {
     if (task.acceptanceChecks.length === 0) errors.push(`Task ${task.id} has no acceptance checks`)
-    if (!hasExplicitTestAcceptanceCheck(task)) {
-      errors.push(`Task ${task.id} must include at least one explicit test/regression acceptance check for TDD`)
-    }
   }
   return { valid: errors.length === 0, errors }
 }

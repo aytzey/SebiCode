@@ -1,13 +1,11 @@
-import { randomUUID, type UUID } from 'crypto'
-import { mkdir, readdir, writeFile } from 'fs/promises'
+import { randomUUID } from 'crypto'
+import { mkdir, readdir, stat, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import type {
   RalphConfig,
   RalphWorkflowDefaults,
 } from '../../skills/sebiralph/types.js'
-import type { LogOption } from '../../types/logs.js'
-import { getLastSessionLog } from '../../utils/sessionStorage.js'
 import { getProjectDir } from '../../utils/sessionStoragePortable.js'
 import {
   applyRunHydration,
@@ -15,6 +13,7 @@ import {
 } from './liveState.js'
 import { deriveRunHydrationFromTranscript } from './markers.js'
 import { selectReusableSebiRalphRun } from './selection.js'
+import { loadRecentAssistantTextEntries } from './transcriptTail.js'
 import type {
   SebiRalphExecutionPolicy,
   SebiRalphRunLookup,
@@ -54,32 +53,12 @@ async function ensureRunsDir(projectPath = getOriginalCwd()): Promise<string> {
   return dir
 }
 
-function getMessageText(message: LogOption['messages'][number]): string {
-  const content = (message as { message?: { content?: unknown } }).message?.content
-  if (typeof content === 'string') {
-    return content
-  }
-  if (!Array.isArray(content)) {
-    return ''
-  }
-  return content
-    .filter(
-      (block): block is { type: 'text'; text: string } =>
-        block.type === 'text' && typeof block.text === 'string',
-    )
-    .map(block => block.text)
-    .join('\n')
-}
-
-function isApiErrorMessage(message: LogOption['messages'][number]): boolean {
-  return Boolean(
-    (message as { isApiErrorMessage?: boolean }).isApiErrorMessage ||
-      (message as { error?: string }).error,
-  )
-}
-
 async function loadRunFile(filePath: string): Promise<SebiRalphRunState | null> {
   return loadPersistedSebiRalphRun(filePath)
+}
+
+function getRunTranscriptPath(run: SebiRalphRunState): string {
+  return join(getProjectDir(run.projectPath), `${run.sessionId}.jsonl`)
 }
 
 export async function saveSebiRalphRun(
@@ -152,19 +131,31 @@ export async function listSebiRalphRuns(
 export async function hydrateSebiRalphRun(
   run: SebiRalphRunState,
 ): Promise<SebiRalphRunLookup> {
-  const log = await getLastSessionLog(run.sessionId as UUID)
-  if (!log) {
+  const transcriptPath = getRunTranscriptPath(run)
+  let modifiedAt: string
+  try {
+    const transcriptStat = await stat(transcriptPath)
+    modifiedAt = transcriptStat.mtime.toISOString()
+  } catch {
     return { run, transcriptFound: false }
   }
 
-  const assistantMessages = log.messages.filter(message => message.type === 'assistant')
+  // Tail-only read: never load the full session JSONL into memory just to
+  // recover phase/deploy markers. The previous implementation called
+  // getLastSessionLog which materialized the entire transcript (and 15 side
+  // maps) for every run in parallel during findSebiRalphRun, which routinely
+  // pushed the parent process past Node's 8 GB heap on long runs.
+  const messages = await loadRecentAssistantTextEntries(transcriptPath, {
+    maxEntries: 200,
+  })
+  if (messages.length === 0) {
+    return { run, transcriptFound: false }
+  }
+
   const hydration = deriveRunHydrationFromTranscript({
     runId: run.id,
-    messages: assistantMessages.map(message => ({
-      text: getMessageText(message),
-      isApiError: isApiErrorMessage(message),
-    })),
-    modifiedAt: log.modified.toISOString(),
+    messages: messages.map(({ text, isApiError }) => ({ text, isApiError })),
+    modifiedAt,
   })
   const next = applyRunHydration(run, hydration)
 

@@ -1,8 +1,8 @@
-import { open } from 'fs/promises'
 import { join } from 'path'
 import { buildResumePrompt, shouldAutoContinueAutonomousRun } from './prompt.js'
 import { getPersistedProjectDir } from './liveState.js'
 import { findLatestSebiRalphRunForSession } from './liveState.js'
+import { loadTranscriptTailEntries } from './transcriptTail.js'
 
 export const SEBIRALPH_AUTO_CONTINUE_BUDGET = 12
 const AUTO_CONTINUE_LOOKBACK_ENTRY_COUNT = 16
@@ -167,67 +167,18 @@ async function loadLatestMainTranscriptEntries(
   sessionId: string,
   count = 2,
 ): Promise<PersistedTranscriptEntry[]> {
-  const transcriptPath = join(getPersistedProjectDir(projectPath), `${sessionId}.jsonl`)
-  let file
-
-  try {
-    file = await open(transcriptPath, 'r')
-    const { size } = await file.stat()
-    if (size <= 0) {
-      return []
-    }
-
-    let chunkSize = Math.min(size, 64 * 1024)
-    while (chunkSize > 0) {
-      const start = Math.max(0, size - chunkSize)
-      const buffer = Buffer.alloc(size - start)
-      await file.read(buffer, 0, buffer.length, start)
-
-      const lines = buffer
-        .toString('utf8')
-        .split('\n')
-        .map(line => line.trim())
-        .filter(Boolean)
-
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        try {
-          const parsed = JSON.parse(lines[index]!) as PersistedTranscriptEntry
-          if (isMeaningfulMainEntry(parsed)) {
-            const entries = [parsed]
-            for (let lookback = index - 1; lookback >= 0 && entries.length < count; lookback -= 1) {
-              try {
-                const previous = JSON.parse(
-                  lines[lookback]!,
-                ) as PersistedTranscriptEntry
-                if (isMeaningfulMainEntry(previous)) {
-                  entries.push(previous)
-                }
-              } catch {
-                continue
-              }
-            }
-            return entries
-          }
-        } catch {
-          continue
-        }
-      }
-
-      if (start === 0) {
-        break
-      }
-      chunkSize = Math.min(size, chunkSize * 2)
-      if (start === 0 || chunkSize === size) {
-        continue
-      }
-    }
-  } catch {
-    return []
-  } finally {
-    await file?.close()
-  }
-
-  return []
+  const transcriptPath = join(
+    getPersistedProjectDir(projectPath),
+    `${sessionId}.jsonl`,
+  )
+  // Bounded tail read: at most `count` matching entries OR ~4 MB of file tail,
+  // whichever comes first. This replaces a doubling-buffer scan that could
+  // allocate hundreds of MB per call on long sessions.
+  const entries = await loadTranscriptTailEntries(transcriptPath, {
+    maxEntries: count,
+    filter: entry => isMeaningfulMainEntry(entry as PersistedTranscriptEntry),
+  })
+  return entries as PersistedTranscriptEntry[]
 }
 
 function getTranscriptTailContext(entries: PersistedTranscriptEntry[]): {
